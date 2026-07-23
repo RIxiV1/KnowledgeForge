@@ -251,7 +251,8 @@ def ask_question(vectorstore, question, conversation_history=None):
                         return { "answer": result, "sources": format_sources_with_context(retrieved_docs), "is_analytics": True}
             except Exception as e:
                 print(f"Analytics routing error: {e}")
-            return { "answer": "No structured dataset found for your analytics query. Try asking about specific data or uploading a CSV/Excel file.", "sources": [], "is_analytics": True }
+            # No structured dataset produced an answer -> fall through to normal
+            # document Q&A instead of dead-ending the query.
 
         retrieved_docs = hybrid_search(vectorstore, question, k=10)
         

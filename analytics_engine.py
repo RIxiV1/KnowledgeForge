@@ -4,12 +4,22 @@ import re
 
 def is_analytic_question(question):
     """
-    Detect if question is asking for data analytics/aggregation
-    """
-    question = question.lower()
+    Detect if a question is asking for data analytics/aggregation.
 
-    keywords = [ "count", "total", "sum", "average", "avg", "mean", "highest", "lowest", "most", "least", "top", "bottom", "maximum", "minimum", "spent", "revenue", "profit", "percentage", "compare", "trend", "group by", "distribution", "how many", "calculate", "rank", "sort", "per year", "per month", "rows", "records", "entries", "unique" ]
-    return any(keyword in question for keyword in keywords)
+    Matches whole words, not substrings, so ordinary questions aren't misrouted
+    to the spreadsheet path -- e.g. "summarize" must not trigger on the "sum"
+    inside it, "meaning" must not trigger on "mean".
+    """
+    q = question.lower()
+    single_word = {
+        "count", "total", "sum", "average", "avg", "mean", "highest", "lowest",
+        "most", "least", "top", "bottom", "maximum", "minimum", "spent",
+        "revenue", "profit", "percentage", "compare", "trend", "distribution",
+        "calculate", "rank", "sort", "rows", "records", "entries", "unique",
+    }
+    phrases = ["group by", "how many", "per year", "per month"]
+    words = set(re.findall(r"[a-z]+", q))
+    return bool(words & single_word) or any(p in q for p in phrases)
 
 
 def analyze_dataframe(file_path, question):
