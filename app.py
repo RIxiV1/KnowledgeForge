@@ -2,7 +2,6 @@ import os
 import shutil
 import hashlib
 import time
-import base64
 import html
 import streamlit as st
 from document_loader import load_file
@@ -167,8 +166,9 @@ EMPTY_STATE_HTML = f"""
 </div>
 """
 
-# The brand mark as a data-URI so it can be used as the assistant's chat avatar.
-_GEM_AVATAR = "data:image/svg+xml;base64," + base64.b64encode(_gem(30).encode("utf-8")).decode("ascii")
+# Assistant avatar. Browsers/Streamlit block data:image/svg+xml avatars, so use
+# a reliable brand-matched emoji (blue diamond) that always renders.
+_GEM_AVATAR = "🔷"
 
 
 def _sources_html(sources):
