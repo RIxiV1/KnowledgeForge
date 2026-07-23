@@ -1,10 +1,23 @@
 import os
+import re
 import json
+import fitz  # PyMuPDF
 import pandas as pd
 from langchain_core.documents import Document
-from langchain_community.document_loaders import PyPDFLoader
 from docx import Document as DocxDocument
 from pptx import Presentation
+
+
+def _clean(text):
+    """Drop only genuinely undecodable glyphs and collapse runs of whitespace.
+
+    Real punctuation (em/en dashes, bullets, arrows, curly quotes) is kept —
+    it's valid content; only the Windows console fails to render it.
+    """
+    text = text.replace("�", " ")  # replacement char = genuinely undecodable glyph
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 CSV_BATCH_SIZE = 100
 def create_metadata(filename, file_path, file_type):
@@ -17,10 +30,20 @@ def load_file(file_path):
     filename = os.path.basename(file_path)
     docs = []
     if extension == ".pdf":
-        loader = PyPDFLoader(file_path)
-        docs = loader.load()
-        for doc in docs:
-            doc.metadata.update(create_metadata(filename, file_path, "pdf"))
+        # PyMuPDF reconstructs word spacing from glyph positions far better than
+        # the default loader (which jams words together on styled/web-made PDFs).
+        pdf = fitz.open(file_path)
+        for i, page in enumerate(pdf):
+            text = _clean(page.get_text("text"))
+            if not text:
+                continue
+            docs.append(
+                Document(
+                    page_content=text,
+                    metadata={**create_metadata(filename, file_path, "pdf"), "page": i + 1},
+                )
+            )
+        pdf.close()
     elif extension == ".txt":
         with open(file_path, "r", encoding="utf-8") as f:
             text = f.read()

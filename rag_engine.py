@@ -6,13 +6,29 @@ from langchain_core.documents import Document
 from analytics_engine import is_analytic_question, analyze_dataframe
 from config import *
 
-llm = ChatOllama(model=LLM_MODEL, temperature=0)
-splitter = RecursiveCharacterTextSplitter(chunk_size=1200, chunk_overlap=150)
+llm = ChatOllama(model=LLM_MODEL, temperature=0, num_ctx=LLM_NUM_CTX)
+splitter = RecursiveCharacterTextSplitter(chunk_size=MAX_CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
+
+# Cache the BM25 index so we don't rebuild it over the whole corpus on every query.
+_bm25_cache = {"count": -1, "retriever": None}
 
 
-def add_documents(vectorstore, docs):
-    """Add documents to vector store with batch processing"""
+def _invalidate_bm25_cache():
+    _bm25_cache["count"] = -1
+    _bm25_cache["retriever"] = None
+
+
+def add_documents(vectorstore, docs, file_hash=None):
+    """Add documents to vector store with batch processing.
+
+    If file_hash is given, every chunk is tagged with it so the file's vectors
+    can later be removed as a unit (see delete_documents).
+    """
     chunks = splitter.split_documents(docs)
+
+    if file_hash:
+        for chunk in chunks:
+            chunk.metadata["file_hash"] = file_hash
 
     print(f"Total Chunks Created: {len(chunks)}")
     batch_size = 100
@@ -26,7 +42,33 @@ def add_documents(vectorstore, docs):
             print(f"Indexed {min(i + batch_size, len(chunks))}/{len(chunks)}")
         except Exception as e:
             print(f"Batch Failed: {e}")
+    _invalidate_bm25_cache()
     print("Document Indexing Complete")
+
+
+def delete_documents(vectorstore, file_hash):
+    """Remove every chunk belonging to a file (by its content hash)."""
+    try:
+        vectorstore._collection.delete(where={"file_hash": file_hash})
+        _invalidate_bm25_cache()
+        return True
+    except Exception as e:
+        print(f"Delete failed: {e}")
+        return False
+
+
+def reset_vectorstore(vectorstore):
+    """Remove all documents from the vector store."""
+    try:
+        data = vectorstore.get()
+        ids = data.get("ids") or []
+        if ids:
+            vectorstore.delete(ids=ids)
+        _invalidate_bm25_cache()
+        return True
+    except Exception as e:
+        print(f"Reset failed: {e}")
+        return False
 
 def select_best_dataset(docs):
     """Select best dataset from retrieved documents"""
@@ -39,47 +81,86 @@ def select_best_dataset(docs):
         return None
     return max(dataset_score, key=dataset_score.get)
 
-def hybrid_search(vectorstore, question, k=5):
+def _get_bm25_retriever(vectorstore):
     """
-    Perform hybrid search: combine semantic search (vector) with keyword search (BM25)
+    Build (or reuse a cached) BM25 retriever over the whole corpus.
+
+    Rebuilding BM25 from every document on each query is O(corpus) and was the
+    main latency cost of the old hybrid search. We cache the retriever and only
+    rebuild when the number of indexed documents changes (e.g. a new upload).
     """
+    all_docs = vectorstore.get()
+    documents = all_docs.get("documents") or []
+    metadatas = all_docs.get("metadatas") or []
+
+    if not documents:
+        return None
+
+    if _bm25_cache["count"] == len(documents) and _bm25_cache["retriever"] is not None:
+        return _bm25_cache["retriever"]
+
+    docs_for_bm25 = [
+        Document(page_content=content, metadata=metadatas[i] if i < len(metadatas) else {})
+        for i, content in enumerate(documents)
+    ]
+    retriever = BM25Retriever.from_documents(docs_for_bm25)
+    _bm25_cache["count"] = len(documents)
+    _bm25_cache["retriever"] = retriever
+    return retriever
+
+def hybrid_search(vectorstore, question, k=5, min_relevance=None):
+    """
+    Hybrid retrieval: fuse semantic (vector) and keyword (BM25) rankings with
+    Reciprocal Rank Fusion (RRF).
+
+    RRF combines the two lists by rank position, so both signals contribute a
+    real, comparable score -- unlike the previous version, where every BM25 hit
+    got a flat 0.5 and results were deduped by object identity (which never
+    matched between the two retrievers, so the "hybrid" merge never happened).
+
+    A relevance gate (min_relevance) returns no results when even the best
+    semantic match is too weak, so the caller can say "not found" instead of
+    answering from irrelevant chunks. Pass min_relevance=0 to disable it.
+    """
+    if min_relevance is None:
+        min_relevance = RELEVANCE_THRESHOLD
     try:
-        # Semantic search from vector store
-        semantic_results = vectorstore.similarity_search_with_score(question, k=k)
-        all_docs = vectorstore.get()
-        
-        if all_docs and 'documents' in all_docs:
-            # Create BM25 retriever
-            docs_for_bm25 = []
-            for i, doc in enumerate(all_docs.get('documents', [])):
-                metadata = all_docs.get('metadatas', [{}])[i] if all_docs.get('metadatas') else {}
-                docs_for_bm25.append(Document(page_content=doc, metadata=metadata))
-            
-            if docs_for_bm25:
-                bm25_retriever = BM25Retriever.from_documents(docs_for_bm25)
-                bm25_results = bm25_retriever.invoke(question)
-                combined = {}
-                for doc, score in semantic_results:
-                    doc_id = id(doc)
-                    combined[doc_id] = {'doc': doc, 'semantic_score': 1 - score}
-                for doc in bm25_results[:k]:
-                    doc_id = id(doc)
-                    if doc_id in combined:
-                        combined[doc_id]['bm25_score'] = 0.5
-                    else:
-                        combined[doc_id] = {'doc': doc, 'bm25_score': 0.5}          
-                final_results = []
-                for item in combined.values():
-                    semantic = item.get('semantic_score', 0)
-                    bm25 = item.get('bm25_score', 0)
-                    final_score = (semantic * 0.6) + (bm25 * 0.4)
-                    final_results.append((item['doc'], final_score))
-                
-                final_results.sort(key=lambda x: x[1], reverse=True)
-                return [doc for doc, _ in final_results[:k]]
-        
-        return [doc for doc, _ in semantic_results]
-        
+        try:
+            scored = vectorstore.similarity_search_with_relevance_scores(question, k=k)
+            semantic_results = [doc for doc, _ in scored]
+            best_relevance = max((rel for _, rel in scored), default=0.0)
+        except Exception:
+            # Fallback if the collection has no relevance function configured.
+            semantic_results = vectorstore.similarity_search(question, k=k)
+            best_relevance = 1.0
+
+        # Relevance gate: bail out early if nothing is semantically close enough.
+        if min_relevance > 0 and best_relevance < min_relevance:
+            return []
+
+        bm25_results = []
+        bm25_retriever = _get_bm25_retriever(vectorstore)
+        if bm25_retriever is not None:
+            bm25_retriever.k = k
+            bm25_results = bm25_retriever.invoke(question)
+
+        # Reciprocal Rank Fusion. Dedup by content so the same chunk retrieved by
+        # both methods is merged and its scores add up.
+        C = 60  # standard RRF damping constant
+        scores = {}
+        holder = {}
+        for ranked_list in (semantic_results, bm25_results):
+            for rank, doc in enumerate(ranked_list):
+                key = doc.page_content
+                scores[key] = scores.get(key, 0.0) + 1.0 / (C + rank + 1)
+                holder.setdefault(key, doc)
+
+        if not scores:
+            return semantic_results
+
+        ordered = sorted(scores, key=scores.get, reverse=True)
+        return [holder[key] for key in ordered[:k]]
+
     except Exception as e:
         print(f"Hybrid search error: {e}")
         return vectorstore.similarity_search(question, k=k)
@@ -160,7 +241,7 @@ def ask_question(vectorstore, question, conversation_history=None):
             conversation_history = []
         if is_analytic_question(question):
             try:
-                retrieved_docs = hybrid_search(vectorstore, question, k=30)
+                retrieved_docs = hybrid_search(vectorstore, question, k=30, min_relevance=0)
                 selected_dataset = select_best_dataset(retrieved_docs)
 
                 if selected_dataset:
@@ -183,7 +264,7 @@ def ask_question(vectorstore, question, conversation_history=None):
         if not retrieved_docs:
             return { "answer": "No relevant information found in your documents. Try uploading more documents or rephrasing your question.", "sources": [], "is_analytics": False }
         context = "\n\n".join(doc.page_content for doc in retrieved_docs)
-        context = context[:15000]
+        context = context[:MAX_CONTEXT_LENGTH]
 
         # Build conversation context for better continuity
         conversation_context = ""
