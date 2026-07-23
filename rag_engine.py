@@ -6,7 +6,7 @@ from langchain_core.documents import Document
 from analytics_engine import is_analytic_question, analyze_dataframe
 from config import *
 
-llm = ChatOllama(model=LLM_MODEL, temperature=0)
+llm = ChatOllama(model=LLM_MODEL, temperature=0, num_ctx=LLM_NUM_CTX)
 splitter = RecursiveCharacterTextSplitter(chunk_size=MAX_CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
 
 # Cache the BM25 index so we don't rebuild it over the whole corpus on every query.

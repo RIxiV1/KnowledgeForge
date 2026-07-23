@@ -27,8 +27,12 @@ DATABASE_PATH = os.getenv("DATABASE_PATH", "chat_history.db")
 TOP_K = _int("RETRIEVAL_TOP_K", 20)
 MAX_CHUNK_SIZE = _int("CHUNK_SIZE", 1200)
 CHUNK_OVERLAP = _int("CHUNK_OVERLAP", 150)
-MAX_CONTEXT_LENGTH = _int("MAX_CONTEXT_LENGTH", 15000)
+MAX_CONTEXT_LENGTH = _int("MAX_CONTEXT_LENGTH", 9000)
 CONVERSATION_HISTORY_LIMIT = _int("CONVERSATION_HISTORY_LIMIT", 5)
+# Model context window (tokens). Ollama defaults this to 4096 on low-VRAM GPUs,
+# which silently truncates the retrieved document text out of the prompt so the
+# model "can't see" the file. Raise it so the whole context actually fits.
+LLM_NUM_CTX = _int("LLM_NUM_CTX", 8192)
 # Minimum semantic relevance (0-1) for a query to be considered answerable.
 # If even the best-matching chunk scores below this, the app says it couldn't
 # find the answer instead of forcing one from irrelevant context. Set to 0 to

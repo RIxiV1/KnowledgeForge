@@ -23,40 +23,84 @@ create_tables()
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-st.set_page_config( page_title="Personal RAG Assistant", layout="wide", initial_sidebar_state="expanded" )
+st.set_page_config( page_title="KnowledgeForge", page_icon="◆", layout="wide", initial_sidebar_state="expanded" )
 
 # Basic designing
 
 st.markdown("""
 <style>
-
-/*BG*/
-.stApp {
-    background: linear-gradient( 135deg, #020617 0%, #0f172a 25%, #1e293b 75%, #334155 100% ); }
-
-h1, h2, h3, p, div, span, label { color: #f8fafc; }
-
-/*Menubar*/
-[data-testid="stSidebar"] { background: #111827; border-right: 1px solid rgba(255,255,255,0.08); }
-
-/*Chat msg*/
-.stChatMessage { background-color: rgba(30, 41, 59, 0.5); border-radius: 8px; padding: 12px; margin-bottom: 8px; }
-
-/* Input box */
-.stChatInputContainer { background-color: rgba(15, 23, 42, 0.8); }
-
-.stInfo { background-color: rgba(59, 130, 246, 0.1); border-left: 4px solid #3b82f6; }
-
-/* Hide Streamlit Branding */
-#MainMenu { visibility: hidden; }
-
-footer { visibility: hidden; }
-
-header { visibility: hidden; }
-
+:root{
+  --ground:#0B1120; --surface:#161E2E; --surface-2:#1B2437;
+  --border:#27324B; --text:#E6EAF3; --muted:#93A0B8;
+  --accent:#6366F1; --accent-hover:#818CF8;
+}
+.stApp, [data-testid="stAppViewContainer"]{ background:var(--ground); }
+h1,h2,h3,h4,h5,p,span,label,li{ color:var(--text); }
+[data-testid="stSidebar"]{ background:var(--surface); border-right:1px solid var(--border); }
+[data-testid="stSidebar"] .stButton>button{
+  background:var(--surface-2); color:var(--text); border:1px solid var(--border);
+  border-radius:9px; font-weight:500; transition:border-color .15s ease, color .15s ease; }
+[data-testid="stSidebar"] .stButton>button:hover{ border-color:var(--accent); color:#fff; }
+.stButton>button{ border-radius:9px; }
+.stChatMessage{ background:var(--surface); border:1px solid var(--border);
+  border-radius:14px; padding:14px 16px; margin-bottom:10px; }
+[data-testid="stChatInput"]{ background:var(--surface); border:1px solid var(--border); border-radius:12px; }
+[data-testid="stChatInput"]:focus-within{ border-color:var(--accent); }
+[data-testid="stFileUploaderDropzone"]{
+  background:var(--surface); border:1.5px dashed var(--border); border-radius:14px; }
+[data-testid="stFileUploaderDropzone"]:hover{ border-color:var(--accent); }
+[data-testid="stMetricValue"]{ color:var(--text); font-variant-numeric:tabular-nums; font-weight:600; }
+[data-testid="stMetricLabel"]{ color:var(--muted); }
+[data-testid="stExpander"]{ border:1px solid var(--border); border-radius:12px; background:var(--surface); }
+.stAlert{ border-radius:10px; }
+a{ color:var(--accent-hover); text-decoration:none; }
+hr{ border-color:var(--border); margin:14px 0; }
+#MainMenu, footer, header{ visibility:hidden; }
+@media (prefers-reduced-motion: reduce){ *{ animation:none !important; transition:none !important; } }
 </style>
-            
+
 """, unsafe_allow_html=True)
+
+# ---- Brand mark: "Forged Facet" -------------------------------------------
+# A cut gem — two indigo facets + a warm amber crown — reads as the ember of
+# insight refined from raw documents. Static, geometric, legible at any size.
+def _gem(size):
+    return (
+        f'<svg width="{size}" height="{size}" viewBox="0 0 32 32" fill="none" '
+        'xmlns="http://www.w3.org/2000/svg" style="display:block;flex:0 0 auto;">'
+        '<path d="M16 2.5 L2.5 16 L16 29.5 Z" fill="#6366F1"/>'
+        '<path d="M16 2.5 L29.5 16 L16 29.5 Z" fill="#4F46E5"/>'
+        '<path d="M16 2.5 L22.5 9.5 L16 13 L9.5 9.5 Z" fill="#F59E0B"/>'
+        '</svg>'
+    )
+
+_WORDMARK = 'Knowledge<span style="color:#818CF8;">Forge</span>'
+
+HERO_HTML = f"""
+<div style="display:flex;align-items:center;gap:13px;margin:2px 0 4px;">
+  {_gem(34)}
+  <div style="font-size:1.5rem;font-weight:700;letter-spacing:-.02em;color:#E6EAF3;">{_WORDMARK}</div>
+</div>
+<div style="color:#93A0B8;font-size:.92rem;margin:0 0 18px;max-width:62ch;">
+  Ask questions across your documents — answers grounded in your own sources, with the files they came from.
+</div>
+"""
+
+SIDEBAR_LOGO_HTML = f"""
+<div style="display:flex;align-items:center;gap:9px;margin:2px 0 1px;">
+  {_gem(26)}
+  <div style="font-size:1.02rem;font-weight:700;letter-spacing:-.01em;color:#E6EAF3;">{_WORDMARK}</div>
+</div>
+<div style="color:#93A0B8;font-size:.76rem;margin:0 0 4px;">Private · local · source-grounded</div>
+"""
+
+EMPTY_STATE_HTML = f"""
+<div style="text-align:center;padding:40px 0 12px;">
+  <div style="opacity:.55;display:inline-block;">{_gem(40)}</div>
+  <div style="color:#C7CEDB;margin-top:14px;font-size:.98rem;font-weight:500;">Your knowledge base is ready</div>
+  <div style="color:#6B7688;font-size:.86rem;margin-top:3px;">Upload a document above, then ask a question about it.</div>
+</div>
+"""
 
 if "vectorstore" not in st.session_state:
     st.session_state.vectorstore = get_vectorstore()
@@ -76,26 +120,17 @@ if "show_delete_warning" not in st.session_state:
     st.session_state.show_delete_warning = False
 
 with st.sidebar:
-    st.title("Arsath Mohamed")
-    st.caption("AI & Data Engineering")
-    
+    st.markdown(SIDEBAR_LOGO_HTML, unsafe_allow_html=True)
+
     st.markdown("---")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        st.link_button("GitHub", "https://github.com/ArsathMohamed351", use_container_width=True)
-    with col2:
-        st.link_button("LinkedIn", "https://www.linkedin.com/in/arsath-mohamed-710067323/", use_container_width=True)
-    
-    st.markdown("---")
-    
-    st.subheader("Knowledge Base")
+
+    st.markdown("#### Knowledge base")
     
     # Chat history info
     history_count = len(get_chat_history())
-    st.metric("Chat History", history_count)
-    
-    if st.button("View Chat History", use_container_width=True):
+    st.metric("Conversations", history_count)
+
+    if st.button("View history", use_container_width=True):
         st.session_state.show_history = not st.session_state.get("show_history", False)
 
     # Indexed documents, with per-file removal (deletes their vectors too).
@@ -121,20 +156,20 @@ with st.sidebar:
     col1, col2 = st.columns(2)
 
     with col1:
-        if st.button("Clear History", use_container_width=True):
+        if st.button("Clear history", use_container_width=True):
             clear_history()
             st.session_state.conversation_history = []
-            st.success("Chat history cleared")
+            st.success("History cleared")
             time.sleep(1)
             st.rerun()
-    
+
     with col2:
-        if st.button("Delete Uploads", use_container_width=True):
+        if st.button("Delete all", use_container_width=True):
             st.session_state.show_delete_warning = True
-    
-    # Show warning if delete uploads button was clicked
+
+    # Show warning if delete-all button was clicked
     if st.session_state.get("show_delete_warning", False):
-        st.warning("This will delete ALL uploaded files!")
+        st.warning("This removes every document and its answers.")
         col1, col2 = st.columns(2)
         
         with col1:
@@ -161,10 +196,10 @@ with st.sidebar:
                 time.sleep(1)
                 st.rerun()
 
-st.title("Ask me anything, I remember stuff")
+st.markdown(HERO_HTML, unsafe_allow_html=True)
 
 uploaded_files = st.file_uploader(
-    "Throw your docs in here, I got you",
+    "Upload documents to your knowledge base",
     accept_multiple_files=True,
     type=["pdf", "txt", "csv", "xlsx", "xls", "docx", "pptx", "json"]
 )
@@ -187,17 +222,17 @@ if uploaded_files:
             f.write(uploaded_file.getbuffer())
         
         # file processing
-        with st.spinner(f"Processing {uploaded_file.name}..."):
+        with st.spinner(f"Indexing {uploaded_file.name}…"):
             try:
                 docs = load_file(file_path)
                 add_documents(st.session_state.vectorstore, docs, file_hash=file_hash)
                 st.session_state.uploaded_hashes.add(file_hash)
                 save_file(file_hash, uploaded_file.name)
-                st.success(f"{uploaded_file.name} indexed ({len(docs)} chunks)")
+                st.success(f"Indexed {uploaded_file.name} — {len(docs)} section(s)")
             except Exception as e:
                 st.error(f"Error processing {uploaded_file.name}: {str(e)}")
 if st.session_state.get("show_history", False):
-    with st.expander("what we talked about", expanded=True):
+    with st.expander("Conversation history", expanded=True):
         history = get_chat_history()
         
         if history:
@@ -217,11 +252,13 @@ if st.session_state.get("show_history", False):
                     
                     st.divider()
         else:
-            st.info("bro's memory is on airplane mode")
+            st.info("No conversations yet.")
 
 # MAIN INTERFACE
 
-st.subheader("Bro,Ask Something...")
+# Calm empty state when there's no conversation yet
+if not st.session_state.conversation_history:
+    st.markdown(EMPTY_STATE_HTML, unsafe_allow_html=True)
 
 # conversation history
 for exchange in st.session_state.conversation_history:
@@ -242,7 +279,7 @@ for exchange in st.session_state.conversation_history:
                     else:
                         st.info(f"{source}")
 
-question = st.chat_input("Ask me anything about your docs… I got you")
+question = st.chat_input("Ask a question about your documents…")
 
 if question:
     # input validation
@@ -260,7 +297,7 @@ if question:
         answer = "No response generated"
         sources = []
         is_analytics = False
-        with st.spinner("Searching and analyzing..."):
+        with st.spinner("Searching your documents…"):
             try:
                 result = ask_question( st.session_state.vectorstore, question, conversation_history=st.session_state.conversation_history )
                 answer = result.get("answer", "No response generated")
