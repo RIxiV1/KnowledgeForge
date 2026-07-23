@@ -11,6 +11,7 @@ from config import MAX_UPLOAD_MB
 from document_loader import load_file
 from vector_store import get_vectorstore
 from rag_engine import add_documents, prepare_answer, delete_documents, reset_vectorstore
+from study_engine import pick_chunk, generate_question, grade_answer, highlight_pdf
 from database import (
     create_tables,
     save_chat,
@@ -137,6 +138,10 @@ p,span,label,li{ color:var(--text); }
 .kf-cursor{ display:inline-block; width:8px; height:1.05em; transform:translateY(2px);
   background:var(--accent-2); border-radius:1px; margin-left:1px; animation:kfblink .9s steps(2,start) infinite; }
 @keyframes kfblink{ 0%,50%{ opacity:1; } 51%,100%{ opacity:0; } }
+/* Study-mode question card */
+.kf-qcard{ background:linear-gradient(180deg,#17203a,#131a2e); border:1px solid #2c3a63;
+  border-radius:16px; padding:20px 22px; font-size:1.18rem; font-weight:600; color:#EAEEF9;
+  line-height:1.5; box-shadow:var(--shadow); margin-bottom:14px; }
 a{ color:var(--accent-2); text-decoration:none; }
 a:hover{ text-decoration:underline; }
 hr{ border-color:var(--border); margin:16px 0; }
@@ -264,6 +269,138 @@ def _render_extras(latency, is_analytics, sources):
             st.markdown(_sources_html(sources), unsafe_allow_html=True)
         with st.expander("Evidence — the exact passages used"):
             st.markdown(_evidence_html(sources), unsafe_allow_html=True)
+
+
+STUDY_INTRO_HTML = """
+<div style="text-align:center;padding:20px 0 8px;">
+  <div style="font-size:1.15rem;font-weight:700;color:#EAEEF9;">Learn by explaining, not just reading</div>
+  <div style="color:#93A0B8;font-size:.92rem;margin-top:6px;max-width:54ch;margin-inline:auto;line-height:1.55;">
+    KnowledgeForge quizzes you from your own material, checks your answer against the source,
+    and shows you the exact passage to revisit — active recall, powered by your documents.
+  </div>
+</div>
+"""
+
+
+def _verdict_html(verdict, feedback):
+    styles = {
+        "correct": ("#22c55e", "Correct"),
+        "partial": ("#f59e0b", "Partly right"),
+        "incorrect": ("#ef4444", "Not quite"),
+    }
+    color, label = styles.get(verdict, ("#818CF8", "Feedback"))
+    return (
+        '<div style="display:flex;gap:11px;align-items:flex-start;margin:8px 0 6px;">'
+        f'<span style="background:{color}22;color:{color};border:1px solid {color}66;'
+        'padding:4px 12px;border-radius:999px;font-weight:700;font-size:.82rem;white-space:nowrap;">'
+        f'{label}</span>'
+        f'<span style="color:var(--text);line-height:1.55;">{html.escape(feedback)}</span></div>'
+    )
+
+
+def _study_new_question(scope, model):
+    """Pick a fresh chunk and generate a question from it, then rerun."""
+    used = st.session_state.setdefault("study_used_ids", set())
+    with st.spinner("Finding something to quiz you on…"):
+        picked = pick_chunk(st.session_state.vectorstore, source=scope, exclude_ids=used)
+        if not picked:
+            st.toast("No content to study yet — upload a document first.")
+            return
+        cid, text, meta = picked
+        used.add(cid)
+        question = generate_question(text, model)
+    st.session_state.study_chunk = {"id": cid, "text": text, "meta": meta}
+    st.session_state.study_question = question
+    st.session_state.study_phase = "question"
+    st.session_state.pop("study_result", None)
+    st.session_state.pop("study_png", None)
+    st.rerun()
+
+
+def render_study():
+    """Socratic study mode: quiz the student from their own documents."""
+    files = [n for _, n in get_indexed_files()]
+    if not files:
+        st.info("Upload a document above, then come back to Study mode to be quizzed on it.")
+        return
+
+    study_doc = st.selectbox("Study from", ["All documents"] + files, key="study_doc")
+    scope = None if study_doc == "All documents" else study_doc
+    model = RESPONSE_MODES.get(st.session_state.get("mode_select", "Accurate · llama3.1:8b"))
+
+    stats = st.session_state.setdefault(
+        "study_stats", {"asked": 0, "correct": 0, "partial": 0, "incorrect": 0}
+    )
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Questions", stats["asked"])
+    m2.metric("Correct", stats["correct"])
+    acc = round(100 * stats["correct"] / stats["asked"]) if stats["asked"] else 0
+    m3.metric("Accuracy", f"{acc}%")
+
+    phase = st.session_state.get("study_phase")
+
+    if not phase:
+        st.markdown(STUDY_INTRO_HTML, unsafe_allow_html=True)
+        if st.button("Start studying", type="primary", use_container_width=True):
+            _study_new_question(scope, model)
+        return
+
+    st.markdown(
+        f'<div class="kf-qcard">{html.escape(st.session_state.study_question)}</div>',
+        unsafe_allow_html=True,
+    )
+    chunk = st.session_state.study_chunk
+
+    if phase == "question":
+        answer = st.text_area(
+            "Your answer", key=f"ans_{chunk['id']}", height=130,
+            placeholder="Explain it in your own words…",
+        )
+        c1, c2 = st.columns([3, 1])
+        if c1.button("Submit answer", type="primary", use_container_width=True):
+            if not answer.strip():
+                st.toast("Write an answer first.")
+            else:
+                with st.spinner("Checking your understanding…"):
+                    res = grade_answer(st.session_state.study_question, answer, chunk["text"], model)
+                meta = chunk["meta"]
+                png = None
+                if meta.get("file_type") == "pdf" and meta.get("page") and meta.get("file_path"):
+                    png = highlight_pdf(meta["file_path"], meta["page"], res.get("quote", ""))
+                st.session_state.study_result = res
+                st.session_state.study_png = png
+                st.session_state.study_answer_shown = answer
+                stats["asked"] += 1
+                stats[res["verdict"]] = stats.get(res["verdict"], 0) + 1
+                st.session_state.study_phase = "feedback"
+                st.rerun()
+        if c2.button("Skip", use_container_width=True):
+            _study_new_question(scope, model)
+
+    elif phase == "feedback":
+        res = st.session_state.study_result
+        st.caption("Your answer")
+        st.markdown(f"> {html.escape(st.session_state.get('study_answer_shown', ''))}")
+        st.markdown(_verdict_html(res["verdict"], res["feedback"]), unsafe_allow_html=True)
+        if res.get("missed"):
+            st.markdown(f"**Revisit:** {html.escape(res['missed'])}")
+
+        meta = chunk["meta"]
+        page = meta.get("page")
+        st.markdown(f"**Source — {html.escape(meta.get('source', 'source'))}"
+                    + (f" · page {page}" if page else "") + "**")
+        png = st.session_state.get("study_png")
+        if png is not None:
+            st.image(png, use_container_width=True)
+        else:
+            body = res.get("quote") or chunk["text"][:600]
+            st.markdown(
+                f'<div class="kf-ev"><div class="kf-ev-b">{html.escape(body)}</div></div>',
+                unsafe_allow_html=True,
+            )
+
+        if st.button("Next question", type="primary", use_container_width=True):
+            _study_new_question(scope, model)
 
 
 @st.dialog("What KnowledgeForge can do", width="large")
@@ -568,6 +705,17 @@ if uploaded_files:
             except Exception:
                 traceback.print_exc()  # full detail to the server log, not the user
                 st.error(f"Couldn't process {uploaded_file.name}. It may be corrupt, empty, or an unsupported layout.")
+
+# --- Mode switch: Study (Socratic) is the hero; Chat is the Q&A fallback. ------
+st.markdown('<div style="margin-top:4px;"></div>', unsafe_allow_html=True)
+_mode = st.radio(
+    "Mode", ["🎓 Study", "💬 Chat"], horizontal=True,
+    label_visibility="collapsed", key="app_mode",
+)
+if _mode == "🎓 Study":
+    render_study()
+    st.stop()
+
 if st.session_state.get("show_history", False):
     with st.expander("Conversation history", expanded=True):
         history = get_chat_history()
