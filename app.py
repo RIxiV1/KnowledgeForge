@@ -238,6 +238,55 @@ def _render_extras(latency, is_analytics, sources):
             st.markdown(_evidence_html(sources), unsafe_allow_html=True)
 
 
+@st.dialog("What KnowledgeForge can do", width="large")
+def show_help():
+    st.markdown(
+        """
+KnowledgeForge answers questions about **your own documents** — privately, on your
+machine, with citations you can verify.
+
+**Ask & answer**
+- Ask in plain English; answers are grounded **only** in your uploaded documents.
+- Answers **stream live** with inline citations like `[1]` `[2]`, plus an **Evidence**
+  panel showing the exact source text behind each one.
+- If something isn't in your documents, it says *"I couldn't find this…"* — it won't make things up.
+
+**Your documents**
+- Upload **many files at once** — PDF, Word (DOCX), PowerPoint (PPTX), Excel (XLSX/XLS), CSV, TXT, JSON.
+- Search **across everything**, or focus on **one file** using *Ask about* in the sidebar.
+- **Remove** any single file (and its data), or **Delete all**, from the sidebar.
+
+**Smart retrieval**
+- **Hybrid search** (meaning + keywords) finds the right passages.
+- Results are **balanced across files**, so one big document can't drown out the rest.
+- Every answer shows its **sources with page numbers**.
+
+**Data questions (CSV / Excel)**
+- Ask things like *"how many rows"*, *"total revenue"*, *"average price"*, *"top 5 by amount"*.
+
+**Memory**
+- Remembers the current conversation, so you can ask **follow-up questions**.
+
+**Private & local**
+- Runs entirely on your machine via **Ollama**. No API keys, no cloud — your files never leave your computer.
+
+---
+
+**How to use — 3 steps**
+1. **Upload** one or more documents at the top of the page.
+2. *(Optional)* In the sidebar **Ask about**, pick a single file to focus on.
+3. **Type your question** and press Enter.
+
+**Good to know**
+- The **Ollama** engine must be running.
+- Each answer uses the ~5 most relevant passages — ask focused questions for the sharpest results.
+- Scanned / image-only PDFs may contain no readable text (no OCR).
+        """
+    )
+    if st.button("Got it", use_container_width=True):
+        st.rerun()
+
+
 def _meta_html(latency, is_analytics, n_sources):
     """A small row of pill chips: latency · mode · source count."""
     mode = "Analytics" if is_analytics else "Document Q&A"
@@ -269,6 +318,9 @@ if "show_delete_warning" not in st.session_state:
 
 with st.sidebar:
     st.markdown(SIDEBAR_LOGO_HTML, unsafe_allow_html=True)
+
+    if st.button("How to use", use_container_width=True):
+        show_help()
 
     st.markdown("---")
 
