@@ -311,6 +311,73 @@ machine, with citations you can verify.
         st.rerun()
 
 
+_COMMANDS_HELP = """**Slash commands**
+
+- `/help` — open the full help panel
+- `/commands` — show this list
+- `/files` — list your indexed documents
+- `/scope <file>` — focus answers on one file  ·  `/scope all` to reset
+- `/mode fast` · `/mode accurate` — switch response speed vs depth
+- `/clear` — start a new conversation
+"""
+
+
+def _append_cmd(question, answer):
+    """Add a slash-command result to the transcript (no LLM, no sources)."""
+    st.session_state.conversation_history.append({
+        "question": question, "answer": answer, "sources": [],
+        "is_analytics": False, "latency": 0, "is_command": True,
+    })
+    st.session_state.conversation_history = st.session_state.conversation_history[-10:]
+
+
+def _handle_command(raw):
+    """Parse and run a /slash command. Reruns or opens a dialog; never returns to Q&A."""
+    parts = raw.strip().split(maxsplit=1)
+    cmd = parts[0].lstrip("/").lower()
+    arg = parts[1].strip() if len(parts) > 1 else ""
+    names = [n for _, n in get_indexed_files()]
+
+    if cmd in ("help", "?"):
+        show_help()
+        return
+    if cmd in ("commands", "cmds", "command"):
+        _append_cmd(raw, _COMMANDS_HELP)
+        st.rerun()
+    if cmd in ("clear", "new", "reset"):
+        st.session_state.conversation_history = []
+        st.toast("Started a new conversation")
+        st.rerun()
+    if cmd in ("files", "docs", "ls"):
+        body = ("**Indexed documents**\n\n" + "\n".join(f"- {n}" for n in names)) if names \
+            else "No documents indexed yet — upload some at the top of the page."
+        _append_cmd(raw, body)
+        st.rerun()
+    if cmd == "scope":
+        if arg.lower() in ("all", "*", ""):
+            st.session_state.pending_scope = "All documents"
+            st.rerun()
+        match = next((n for n in names if arg.lower() in n.lower()), None)
+        if match:
+            st.session_state.pending_scope = match
+            st.rerun()
+        _append_cmd(raw, f"No indexed file matches **{arg}**. Try `/files` to see the list.")
+        st.rerun()
+    if cmd == "mode":
+        a = arg.lower()
+        if a.startswith("f"):
+            st.session_state.pending_mode = "Fast · qwen2.5:3b"
+            st.rerun()
+        if a.startswith("a"):
+            st.session_state.pending_mode = "Accurate · llama3.1:8b"
+            st.rerun()
+        _append_cmd(raw, "Usage: `/mode fast` or `/mode accurate`.")
+        st.rerun()
+
+    _append_cmd(raw, f"Unknown command `/{cmd}`. Type `/commands` to see what's available.")
+    st.rerun()
+
+
 def _meta_html(latency, is_analytics, n_sources):
     """A small row of pill chips: latency · mode · source count."""
     mode = "Analytics" if is_analytics else "Document Q&A"
@@ -345,6 +412,12 @@ if "show_history" not in st.session_state:
 
 if "show_delete_warning" not in st.session_state:
     st.session_state.show_delete_warning = False
+
+# Apply any pending slash-command widget overrides BEFORE those widgets render
+# (Streamlit forbids setting a widget's state after it's been instantiated).
+for _pk, _wk in (("pending_scope", "scope_select"), ("pending_mode", "mode_select")):
+    if _pk in st.session_state:
+        st.session_state[_wk] = st.session_state.pop(_pk)
 
 with st.sidebar:
     st.markdown(SIDEBAR_LOGO_HTML, unsafe_allow_html=True)
@@ -500,7 +573,7 @@ if st.session_state.get("show_history", False):
 # MAIN INTERFACE
 # st.chat_input pins to the bottom regardless of where it's called, so read it
 # first and use its value to decide what else to render this run.
-typed = st.chat_input("Ask a question about your documents…")
+typed = st.chat_input("Ask a question about your documents…   ·   type / for commands")
 incoming = typed or st.session_state.pop("pending_question", None)
 
 # Empty state + one-tap starter questions — only when there's nothing to show
@@ -521,19 +594,23 @@ if not st.session_state.conversation_history and not incoming:
 
 # Replay the existing transcript (static).
 for exchange in st.session_state.conversation_history:
-    with st.chat_message("user"):
-        st.write(exchange["question"])
+    if exchange.get("question"):
+        with st.chat_message("user"):
+            st.write(exchange["question"])
     with st.chat_message("assistant", avatar=_GEM_AVATAR):
-        st.markdown(exchange["answer"])
-        _render_extras(
-            exchange.get("latency", 0),
-            exchange.get("is_analytics", False),
-            exchange.get("sources"),
-        )
+        st.markdown(exchange["answer"], unsafe_allow_html=True)
+        if not exchange.get("is_command"):
+            _render_extras(
+                exchange.get("latency", 0),
+                exchange.get("is_analytics", False),
+                exchange.get("sources"),
+            )
 
 # Answer a new question with live token streaming.
 if incoming:
-    if len(incoming.strip()) < 3:
+    if incoming.strip().startswith("/"):
+        _handle_command(incoming)  # reruns or opens a dialog; never falls through
+    elif len(incoming.strip()) < 3:
         st.warning("Please enter a longer question.")
     else:
         with st.chat_message("user"):
