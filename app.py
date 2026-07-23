@@ -324,20 +324,30 @@ def render_study():
         st.info("Upload a document above, then come back to Study mode to be quizzed on it.")
         return
 
+    stats = st.session_state.setdefault(
+        "study_stats", {"asked": 0, "correct": 0, "partial": 0, "incorrect": 0}
+    )
+    records = st.session_state.setdefault("study_records", [])
+    phase = st.session_state.get("study_phase")
+
+    if phase == "summary":
+        _render_summary(stats, records)
+        return
+
     study_doc = st.selectbox("Study from", ["All documents"] + files, key="study_doc")
     scope = None if study_doc == "All documents" else study_doc
     model = RESPONSE_MODES.get(st.session_state.get("mode_select", "Accurate · llama3.1:8b"))
 
-    stats = st.session_state.setdefault(
-        "study_stats", {"asked": 0, "correct": 0, "partial": 0, "incorrect": 0}
-    )
     m1, m2, m3 = st.columns(3)
     m1.metric("Questions", stats["asked"])
     m2.metric("Correct", stats["correct"])
     acc = round(100 * stats["correct"] / stats["asked"]) if stats["asked"] else 0
     m3.metric("Accuracy", f"{acc}%")
 
-    phase = st.session_state.get("study_phase")
+    if stats["asked"]:
+        if st.button("Finish & review session", use_container_width=True):
+            st.session_state.study_phase = "summary"
+            st.rerun()
 
     if not phase:
         st.markdown(STUDY_INTRO_HTML, unsafe_allow_html=True)
@@ -372,6 +382,13 @@ def render_study():
                 st.session_state.study_answer_shown = answer
                 stats["asked"] += 1
                 stats[res["verdict"]] = stats.get(res["verdict"], 0) + 1
+                records.append({
+                    "question": st.session_state.study_question,
+                    "verdict": res["verdict"],
+                    "missed": res.get("missed", ""),
+                    "source": meta.get("source", ""),
+                    "page": meta.get("page"),
+                })
                 st.session_state.study_phase = "feedback"
                 st.rerun()
         if c2.button("Skip", use_container_width=True):
@@ -401,6 +418,74 @@ def render_study():
 
         if st.button("Next question", type="primary", use_container_width=True):
             _study_new_question(scope, model)
+
+
+def _reset_study():
+    for key in ("study_phase", "study_chunk", "study_question", "study_result",
+                "study_png", "study_answer_shown", "study_records", "study_stats",
+                "study_used_ids"):
+        st.session_state.pop(key, None)
+
+
+def _render_summary(stats, records):
+    """The demo closer: session score, breakdown, and what to revisit."""
+    asked = stats.get("asked", 0)
+    acc = round(100 * stats.get("correct", 0) / asked) if asked else 0
+    total = max(asked, 1)
+
+    st.markdown(
+        '<div style="text-align:center;padding:12px 0 2px;">'
+        f'<div style="opacity:.9;display:inline-block;">{_gem(40)}</div>'
+        "<div style=\"font-family:'Plus Jakarta Sans',sans-serif;font-size:1.4rem;font-weight:800;"
+        'color:#EAEEF9;margin-top:8px;">Session complete</div></div>',
+        unsafe_allow_html=True,
+    )
+
+    def seg(n, color):
+        return f'<div style="width:{100 * n / total:.1f}%;background:{color};"></div>'
+
+    bar = ('<div style="display:flex;height:12px;border-radius:999px;overflow:hidden;'
+           'background:#1b2540;margin:12px 0 6px;">'
+           + seg(stats.get("correct", 0), "#22c55e")
+           + seg(stats.get("partial", 0), "#f59e0b")
+           + seg(stats.get("incorrect", 0), "#ef4444") + "</div>")
+    legend = (f'<span style="color:#22c55e;">&#9679; {stats.get("correct", 0)} correct</span>'
+              f'&nbsp;&nbsp;<span style="color:#f59e0b;">&#9679; {stats.get("partial", 0)} partial</span>'
+              f'&nbsp;&nbsp;<span style="color:#ef4444;">&#9679; {stats.get("incorrect", 0)} to review</span>')
+    st.markdown(
+        "<div style=\"text-align:center;\"><span style=\"font-family:'Plus Jakarta Sans',sans-serif;"
+        f'font-size:3rem;font-weight:800;color:#EAEEF9;">{acc}%</span>'
+        f'<div style="color:#93A0B8;">accuracy over {asked} question(s)</div></div>'
+        + bar + f'<div style="text-align:center;font-size:.83rem;">{legend}</div>',
+        unsafe_allow_html=True,
+    )
+
+    revisit = [r for r in records if r.get("verdict") in ("incorrect", "partial")]
+    if revisit:
+        st.markdown("#### Revisit these")
+        for r in revisit:
+            color = "#ef4444" if r["verdict"] == "incorrect" else "#f59e0b"
+            src = html.escape(r.get("source", "")) + (f" &middot; p.{r['page']}" if r.get("page") else "")
+            missed = (f'<div style="color:#93A0B8;font-size:.85rem;margin-top:5px;">'
+                      f'{html.escape(r["missed"])}</div>') if r.get("missed") else ""
+            st.markdown(
+                f'<div style="border:1px solid var(--border);border-left:3px solid {color};'
+                'border-radius:11px;padding:12px 14px;margin-bottom:9px;background:var(--surface);">'
+                f'<div style="color:#EAEEF9;font-weight:600;line-height:1.45;">{html.escape(r["question"])}</div>'
+                f'{missed}<div style="color:#6B7688;font-size:.78rem;margin-top:6px;">{src}</div></div>',
+                unsafe_allow_html=True,
+            )
+    elif asked:
+        st.success("You answered everything well — nothing to revisit.")
+
+    st.markdown("<div style='margin-top:8px;'></div>", unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    if c1.button("Study again", type="primary", use_container_width=True):
+        _reset_study()
+        st.rerun()
+    if c2.button("Keep studying", use_container_width=True):
+        st.session_state.study_phase = None
+        st.rerun()
 
 
 @st.dialog("What KnowledgeForge can do", width="large")
