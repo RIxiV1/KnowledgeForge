@@ -116,6 +116,23 @@ p,span,label,li{ color:var(--text); }
 .kf-ev{ border:1px solid var(--border); border-radius:11px; background:#111a2c; padding:10px 13px; }
 .kf-ev-h{ color:var(--accent-2); font-size:.76rem; font-weight:700; letter-spacing:.02em; margin-bottom:5px; }
 .kf-ev-b{ color:var(--muted); font-size:.83rem; line-height:1.55; white-space:pre-wrap; word-break:break-word; }
+/* Live "thinking / searching" activity indicator */
+.kf-think{ display:flex; align-items:center; gap:11px; padding:4px 2px; }
+.kf-think .dots{ display:inline-flex; gap:5px; }
+.kf-think .dots i{ width:7px; height:7px; border-radius:50%; background:var(--accent-2);
+  display:inline-block; animation:kfpulse 1.1s ease-in-out infinite; }
+.kf-think .dots i:nth-child(2){ animation-delay:.16s; }
+.kf-think .dots i:nth-child(3){ animation-delay:.32s; }
+@keyframes kfpulse{ 0%,100%{ transform:scale(.55); opacity:.35; } 50%{ transform:scale(1); opacity:1; } }
+.kf-shimmer{ font-weight:600; color:#8b96b0;
+  background:linear-gradient(90deg,#8b96b0 0%,#8b96b0 35%,#e6eaf9 50%,#818cf8 60%,#8b96b0 75%);
+  background-size:220% 100%; -webkit-background-clip:text; background-clip:text;
+  -webkit-text-fill-color:transparent; animation:kfshimmer 1.7s linear infinite; }
+@keyframes kfshimmer{ 0%{ background-position:120% 0; } 100%{ background-position:-120% 0; } }
+/* Streaming typing cursor */
+.kf-cursor{ display:inline-block; width:8px; height:1.05em; transform:translateY(2px);
+  background:var(--accent-2); border-radius:1px; margin-left:1px; animation:kfblink .9s steps(2,start) infinite; }
+@keyframes kfblink{ 0%,50%{ opacity:1; } 51%,100%{ opacity:0; } }
 a{ color:var(--accent-2); text-decoration:none; }
 a:hover{ text-decoration:underline; }
 hr{ border-color:var(--border); margin:16px 0; }
@@ -167,6 +184,13 @@ EMPTY_STATE_HTML = f"""
   <div style="opacity:.55;display:inline-block;">{_gem(40)}</div>
   <div style="color:#C7CEDB;margin-top:14px;font-size:.98rem;font-weight:500;">Your knowledge base is ready</div>
   <div style="color:#6B7688;font-size:.86rem;margin-top:3px;">Upload a document above, then ask a question about it.</div>
+</div>
+"""
+
+THINKING_HTML = """
+<div class="kf-think">
+  <span class="dots"><i></i><i></i><i></i></span>
+  <span class="kf-shimmer">Searching your documents…</span>
 </div>
 """
 
@@ -520,17 +544,33 @@ if incoming:
         model = RESPONSE_MODES.get(_mode_sel)
         start_time = time.time()
         with st.chat_message("assistant", avatar=_GEM_AVATAR):
-            with st.spinner("Searching your documents…"):
-                res = prepare_answer(
-                    st.session_state.vectorstore,
-                    incoming,
-                    conversation_history=st.session_state.conversation_history,
-                    scope=scope,
-                    model=model,
-                )
+            # Live "searching" shimmer while we retrieve + wait for the first token.
+            thinking = st.empty()
+            thinking.markdown(THINKING_HTML, unsafe_allow_html=True)
+            res = prepare_answer(
+                st.session_state.vectorstore,
+                incoming,
+                conversation_history=st.session_state.conversation_history,
+                scope=scope,
+                model=model,
+            )
             if res["mode"] == "stream":
-                answer = st.write_stream(res["stream"])
+                box = st.empty()
+                buf = ""
+                try:
+                    for i, tok in enumerate(res["stream"]):
+                        if i == 0:
+                            thinking.empty()  # first token arrived — drop the shimmer
+                        buf += tok
+                        # Blinking cursor while streaming.
+                        box.markdown(buf + ' <span class="kf-cursor"></span>', unsafe_allow_html=True)
+                except Exception as e:
+                    buf = buf or f"Error: {e}"
+                thinking.empty()
+                answer = buf.strip() or "I couldn't generate a response."
+                box.markdown(answer, unsafe_allow_html=True)  # final render, no cursor
             else:
+                thinking.empty()
                 answer = res["text"]
                 st.markdown(answer)
             latency = round(time.time() - start_time, 2)
