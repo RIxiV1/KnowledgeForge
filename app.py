@@ -3,6 +3,7 @@ import shutil
 import hashlib
 import time
 import html
+import json
 import streamlit as st
 from document_loader import load_file
 from vector_store import get_vectorstore
@@ -664,3 +665,97 @@ if incoming:
             "latency": latency,
         })
         st.session_state.conversation_history = st.session_state.conversation_history[-10:]
+
+
+# --- Slash-command palette: live suggestions when you type "/" in the chat box.
+# Injected via a same-origin iframe that reaches into the parent document to
+# attach a filtered popover to Streamlit's chat textarea.
+_PALETTE_JS = """
+<script>
+(function(){
+  const pw = window.parent, doc = pw.document;
+  pw.__KF_CMDS = __CMDS__;
+  function ensurePop(){
+    let p = doc.getElementById("kf-pop");
+    if(!p){
+      p = doc.createElement("div");
+      p.id = "kf-pop";
+      p.style.cssText = "position:fixed;z-index:1000000;display:none;max-height:280px;overflow:auto;background:#121A2B;border:1px solid #2E3852;border-radius:12px;padding:6px;box-shadow:0 18px 44px -14px rgba(0,0,0,.75);font-family:Inter,system-ui,sans-serif;";
+      doc.body.appendChild(p);
+    }
+    return p;
+  }
+  function setVal(ta, v){
+    const s = Object.getOwnPropertyDescriptor(pw.HTMLTextAreaElement.prototype, "value").set;
+    s.call(ta, v);
+    ta.dispatchEvent(new Event("input", {bubbles:true}));
+    ta.focus();
+  }
+  function bind(){
+    const ta = doc.querySelector('[data-testid="stChatInput"] textarea');
+    if(!ta){ return setTimeout(bind, 300); }
+    if(ta.dataset.kfPal === "1") return;
+    ta.dataset.kfPal = "1";
+    const pop = ensurePop();
+    let items = [], active = 0;
+    function hide(){ pop.style.display = "none"; }
+    function draw(){
+      pop.innerHTML = items.map(function(c, i){
+        return '<div data-i="'+i+'" style="display:flex;gap:10px;align-items:baseline;padding:8px 10px;border-radius:8px;cursor:pointer;'+(i===active?'background:#1B2540;':'')+'">'
+          + '<span style="color:#818CF8;font-weight:700;font-size:.85rem;white-space:nowrap;">'+c.c+'</span>'
+          + '<span style="color:#8B96B0;font-size:.78rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+c.d+'</span></div>';
+      }).join("");
+      pop.querySelectorAll("[data-i]").forEach(function(el){
+        el.addEventListener("mouseenter", function(){ active = +el.dataset.i; draw(); });
+        el.addEventListener("mousedown", function(e){ e.preventDefault(); setVal(ta, items[+el.dataset.i].c); hide(); });
+      });
+    }
+    function refresh(){
+      const v = ta.value;
+      if(v.charAt(0) !== "/"){ hide(); return; }
+      const q = v.toLowerCase();
+      const CMDS = pw.__KF_CMDS || [];
+      items = CMDS.filter(function(c){
+        const lc = c.c.toLowerCase();
+        if(lc.indexOf(q) === 0) return true;
+        if(q.indexOf(lc) === 0) return true;
+        if(q.indexOf("/scope ") === 0 && lc.indexOf(q.slice(7).trim()) >= 0) return true;
+        return false;
+      });
+      if(!items.length){ hide(); return; }
+      if(active >= items.length) active = 0;
+      draw();
+      const r = ta.getBoundingClientRect();
+      pop.style.left = r.left + "px";
+      pop.style.width = Math.max(r.width, 280) + "px";
+      pop.style.bottom = (pw.innerHeight - r.top + 10) + "px";
+      pop.style.display = "block";
+    }
+    ta.addEventListener("input", function(){ active = 0; refresh(); });
+    ta.addEventListener("keydown", function(e){
+      if(pop.style.display !== "block") return;
+      if(e.key === "ArrowDown"){ e.preventDefault(); active = (active+1)%items.length; draw(); }
+      else if(e.key === "ArrowUp"){ e.preventDefault(); active = (active-1+items.length)%items.length; draw(); }
+      else if(e.key === "Tab"){ e.preventDefault(); setVal(ta, items[active].c); hide(); }
+      else if(e.key === "Escape"){ hide(); }
+    });
+    ta.addEventListener("blur", function(){ setTimeout(hide, 150); });
+    ta.addEventListener("focus", function(){ if(ta.value.charAt(0) === "/") refresh(); });
+  }
+  bind();
+})();
+</script>
+"""
+
+_pal_files = [n for _, n in get_indexed_files()]
+_pal_cmds = [
+    {"c": "/help", "d": "Open the help panel"},
+    {"c": "/commands", "d": "List all commands"},
+    {"c": "/files", "d": "List your documents"},
+    {"c": "/clear", "d": "Start a new conversation"},
+    {"c": "/mode fast", "d": "Fast responses (qwen2.5:3b)"},
+    {"c": "/mode accurate", "d": "Deeper answers (llama3.1:8b)"},
+    {"c": "/scope all", "d": "Search all documents"},
+] + [{"c": "/scope " + n, "d": "Focus on this file"} for n in _pal_files]
+
+st.components.v1.html(_PALETTE_JS.replace("__CMDS__", json.dumps(_pal_cmds)), height=0)
