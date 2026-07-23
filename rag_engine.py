@@ -326,3 +326,91 @@ ANSWER:"""
         return { "answer": response.content, "sources": sources, "is_analytics": False }
     except Exception as e:
         return { "answer": f"Error processing your question: {str(e)}", "sources": [], "is_analytics": False }
+
+
+def _passages(docs):
+    """Turn retrieved docs into numbered passage records (for citations + evidence)."""
+    out = []
+    for i, doc in enumerate(docs, 1):
+        m = doc.metadata
+        out.append({
+            "n": i,
+            "filename": m.get("source", "Unknown"),
+            "file_type": m.get("file_type", "doc"),
+            "page": m.get("page"),
+            "rows": (f"{m.get('batch_start', 0)}-{m.get('batch_end', 0)}" if "batch_start" in m else None),
+            "text": doc.page_content,
+        })
+    return out
+
+
+def prepare_answer(vectorstore, question, conversation_history=None, scope=None):
+    """
+    Retrieve context and return everything the UI needs, including a token STREAM.
+
+    Returns a dict:
+      is_analytics : bool
+      sources      : list of numbered passage records (n, filename, page, text, ...)
+      mode         : "text" or "stream"
+      text         : final answer string           (when mode == "text")
+      stream       : generator of str tokens        (when mode == "stream")
+    """
+    if conversation_history is None:
+        conversation_history = []
+    try:
+        # Analytics path (short pandas results — no need to stream).
+        if is_analytic_question(question):
+            try:
+                docs = hybrid_search(vectorstore, question, k=30, min_relevance=0, source=scope)
+                dataset = select_best_dataset(docs)
+                if dataset:
+                    result = analyze_dataframe(dataset, question)
+                    if result:
+                        return {"is_analytics": True, "mode": "text", "text": result,
+                                "sources": _passages(docs[:5])}
+            except Exception as e:
+                print(f"Analytics routing error: {e}")
+            # fall through to normal document Q&A
+
+        # No LLM reranker here: it adds a slow, fragile extra round-trip before
+        # streaming can begin. RRF + per-file diversity already rank well.
+        docs = hybrid_search(vectorstore, question, k=8, source=scope)[:5]
+        if not docs:
+            return {"is_analytics": False, "mode": "text",
+                    "text": "I couldn't find this in your documents.", "sources": []}
+
+        passages = _passages(docs)
+        numbered = "\n\n".join(
+            f"[{p['n']}] {p['filename']}" + (f", p.{p['page']}" if p['page'] else "") + f"\n{p['text']}"
+            for p in passages
+        )
+        context = numbered[:MAX_CONTEXT_LENGTH]
+        conv = build_conversation_context(conversation_history, max_history=3) if conversation_history else ""
+
+        prompt = f"""{conv}You are KnowledgeForge, a precise document question-answering assistant.
+Answer the user's question using ONLY the numbered context passages below.
+
+RULES:
+- Use only facts stated in the context. Never invent, guess, or rely on outside knowledge.
+- Read ALL passages, then combine the relevant details into one complete, well-structured answer. Group related facts; use short bullet points when it helps.
+- Cite sources inline: right after a fact, add the passage number(s) in square brackets, e.g. [1] or [2][3].
+- Stay faithful to the source wording; do not add opinions or numbers not in the context.
+- Start with the answer itself. Do NOT begin with any preamble such as "Here is the answer", "Based on the context", or "Here are the key points".
+- If the answer is not in the context, reply exactly: "I couldn't find this in your documents."
+- If only part of the question is supported, answer that part and state what is missing.
+
+CONTEXT PASSAGES:
+{context}
+
+QUESTION: {question}
+
+ANSWER:"""
+
+        def _stream():
+            for chunk in llm.stream(prompt):
+                yield chunk.content
+
+        return {"is_analytics": False, "mode": "stream", "stream": _stream(), "sources": passages}
+
+    except Exception as e:
+        return {"is_analytics": False, "mode": "text", "text": f"Error: {e}", "sources": []}

@@ -6,7 +6,7 @@ import html
 import streamlit as st
 from document_loader import load_file
 from vector_store import get_vectorstore
-from rag_engine import add_documents, ask_question, delete_documents, reset_vectorstore
+from rag_engine import add_documents, prepare_answer, delete_documents, reset_vectorstore
 from database import (
     create_tables,
     save_chat,
@@ -112,6 +112,10 @@ p,span,label,li{ color:var(--text); }
 .kf-src-name{ color:var(--text); font-size:.88rem; font-weight:500; word-break:break-word; }
 .kf-src-meta{ color:var(--muted); font-size:.8rem; margin-left:auto; white-space:nowrap;
   font-variant-numeric:tabular-nums; }
+.kf-ev-wrap{ display:flex; flex-direction:column; gap:9px; }
+.kf-ev{ border:1px solid var(--border); border-radius:11px; background:#111a2c; padding:10px 13px; }
+.kf-ev-h{ color:var(--accent-2); font-size:.76rem; font-weight:700; letter-spacing:.02em; margin-bottom:5px; }
+.kf-ev-b{ color:var(--muted); font-size:.83rem; line-height:1.55; white-space:pre-wrap; word-break:break-word; }
 a{ color:var(--accent-2); text-decoration:none; }
 a:hover{ text-decoration:underline; }
 hr{ border-color:var(--border); margin:16px 0; }
@@ -197,11 +201,41 @@ def _sources_html(sources):
         if rows:
             bits.append(f"rows {html.escape(str(rows))}")
         meta = f'<span class="kf-src-meta">{" · ".join(bits)}</span>' if bits else ""
+        num = s.get("n")
+        badge = f"[{num}] {ftype}" if num else ftype
         cards.append(
-            f'<div class="kf-src"><span class="kf-badge">{ftype}</span>'
+            f'<div class="kf-src"><span class="kf-badge">{badge}</span>'
             f'<span class="kf-src-name">{name}</span>{meta}</div>'
         )
     return '<div class="kf-src-wrap">' + "".join(cards) + "</div>"
+
+
+def _evidence_html(sources):
+    """Render the exact passages behind the answer (numbered to match [n] citations)."""
+    if not sources:
+        return ""
+    rows = []
+    for s in sources:
+        if not isinstance(s, dict):
+            continue
+        num = s.get("n")
+        head = (f"[{num}] " if num else "") + html.escape(str(s.get("filename", "")))
+        if s.get("page"):
+            head += f" · p.{html.escape(str(s['page']))}"
+        full = s.get("text") or ""
+        body = html.escape(full[:700]) + (" …" if len(full) > 700 else "")
+        rows.append(f'<div class="kf-ev"><div class="kf-ev-h">{head}</div><div class="kf-ev-b">{body}</div></div>')
+    return '<div class="kf-ev-wrap">' + "".join(rows) + "</div>"
+
+
+def _render_extras(latency, is_analytics, sources):
+    """Metric chips + Sources + Evidence, shared by live and replayed messages."""
+    st.markdown(_meta_html(latency, is_analytics, len(sources or [])), unsafe_allow_html=True)
+    if sources:
+        with st.expander("Sources"):
+            st.markdown(_sources_html(sources), unsafe_allow_html=True)
+        with st.expander("Evidence — the exact passages used"):
+            st.markdown(_evidence_html(sources), unsafe_allow_html=True)
 
 
 def _meta_html(latency, is_analytics, n_sources):
@@ -375,9 +409,14 @@ if st.session_state.get("show_history", False):
             st.info("No conversations yet.")
 
 # MAIN INTERFACE
+# st.chat_input pins to the bottom regardless of where it's called, so read it
+# first and use its value to decide what else to render this run.
+typed = st.chat_input("Ask a question about your documents…")
+incoming = typed or st.session_state.pop("pending_question", None)
 
-# Empty state + one-tap starter questions when there's no conversation yet.
-if not st.session_state.conversation_history:
+# Empty state + one-tap starter questions — only when there's nothing to show
+# and we're not about to answer a question.
+if not st.session_state.conversation_history and not incoming:
     st.markdown(EMPTY_STATE_HTML, unsafe_allow_html=True)
     if get_indexed_files():
         st.markdown(
@@ -391,58 +430,52 @@ if not st.session_state.conversation_history:
                 st.session_state.pending_question = _ex
                 st.rerun()
 
-# Conversation transcript (rendered uniformly; new answers appear here after rerun).
+# Replay the existing transcript (static).
 for exchange in st.session_state.conversation_history:
     with st.chat_message("user"):
         st.write(exchange["question"])
     with st.chat_message("assistant", avatar=_GEM_AVATAR):
-        st.write(exchange["answer"])
-        st.markdown(
-            _meta_html(
-                exchange.get("latency", 0),
-                exchange.get("is_analytics", False),
-                len(exchange.get("sources") or []),
-            ),
-            unsafe_allow_html=True,
+        st.markdown(exchange["answer"])
+        _render_extras(
+            exchange.get("latency", 0),
+            exchange.get("is_analytics", False),
+            exchange.get("sources"),
         )
-        if exchange.get("sources"):
-            with st.expander("Sources"):
-                st.markdown(_sources_html(exchange["sources"]), unsafe_allow_html=True)
 
-# Input: a typed question, or a starter chip that set pending_question.
-typed = st.chat_input("Ask a question about your documents…")
-question = typed or st.session_state.pop("pending_question", None)
-
-if question:
-    if len(question.strip()) < 3:
+# Answer a new question with live token streaming.
+if incoming:
+    if len(incoming.strip()) < 3:
         st.warning("Please enter a longer question.")
     else:
-        start_time = time.time()
-        answer, sources, is_analytics = "No response generated", [], False
+        with st.chat_message("user"):
+            st.write(incoming)
         _scope_sel = st.session_state.get("scope_select", "All documents")
         scope = None if _scope_sel == "All documents" else _scope_sel
-        with st.spinner("Searching your documents…"):
-            try:
-                result = ask_question(
+        start_time = time.time()
+        with st.chat_message("assistant", avatar=_GEM_AVATAR):
+            with st.spinner("Searching your documents…"):
+                res = prepare_answer(
                     st.session_state.vectorstore,
-                    question,
+                    incoming,
                     conversation_history=st.session_state.conversation_history,
                     scope=scope,
                 )
-                answer = result.get("answer", "No response generated")
-                sources = result.get("sources", [])
-                is_analytics = result.get("is_analytics", False)
-                save_chat(question, answer)
-            except Exception as e:
-                answer = f"Error: {str(e)}"
-                sources = []
-        latency = round(time.time() - start_time, 2)
+            if res["mode"] == "stream":
+                answer = st.write_stream(res["stream"])
+            else:
+                answer = res["text"]
+                st.markdown(answer)
+            latency = round(time.time() - start_time, 2)
+            _render_extras(latency, res["is_analytics"], res["sources"])
+        try:
+            save_chat(incoming, answer)
+        except Exception:
+            pass
         st.session_state.conversation_history.append({
-            "question": question,
+            "question": incoming,
             "answer": answer,
-            "sources": sources,
-            "is_analytics": is_analytics,
+            "sources": res["sources"],
+            "is_analytics": res["is_analytics"],
             "latency": latency,
         })
         st.session_state.conversation_history = st.session_state.conversation_history[-10:]
-        st.rerun()
