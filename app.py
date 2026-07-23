@@ -251,6 +251,12 @@ with st.sidebar:
     indexed_files = get_indexed_files()
     st.metric("Indexed Files", len(indexed_files))
     if indexed_files:
+        st.selectbox(
+            "Ask about",
+            ["All documents"] + [n for _, n in indexed_files],
+            key="scope_select",
+            help="Focus answers on one file, or search across everything.",
+        )
         with st.expander("Manage documents"):
             for fhash, fname in indexed_files:
                 fcol, bcol = st.columns([4, 1])
@@ -413,12 +419,15 @@ if question:
     else:
         start_time = time.time()
         answer, sources, is_analytics = "No response generated", [], False
+        _scope_sel = st.session_state.get("scope_select", "All documents")
+        scope = None if _scope_sel == "All documents" else _scope_sel
         with st.spinner("Searching your documents…"):
             try:
                 result = ask_question(
                     st.session_state.vectorstore,
                     question,
                     conversation_history=st.session_state.conversation_history,
+                    scope=scope,
                 )
                 answer = result.get("answer", "No response generated")
                 sources = result.get("sources", [])

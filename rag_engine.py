@@ -108,7 +108,7 @@ def _get_bm25_retriever(vectorstore):
     _bm25_cache["retriever"] = retriever
     return retriever
 
-def hybrid_search(vectorstore, question, k=5, min_relevance=None):
+def hybrid_search(vectorstore, question, k=5, min_relevance=None, source=None):
     """
     Hybrid retrieval: fuse semantic (vector) and keyword (BM25) rankings with
     Reciprocal Rank Fusion (RRF).
@@ -124,14 +124,15 @@ def hybrid_search(vectorstore, question, k=5, min_relevance=None):
     """
     if min_relevance is None:
         min_relevance = RELEVANCE_THRESHOLD
+    flt = {"source": source} if source else None
     try:
         try:
-            scored = vectorstore.similarity_search_with_relevance_scores(question, k=k)
+            scored = vectorstore.similarity_search_with_relevance_scores(question, k=k, filter=flt)
             semantic_results = [doc for doc, _ in scored]
             best_relevance = max((rel for _, rel in scored), default=0.0)
         except Exception:
             # Fallback if the collection has no relevance function configured.
-            semantic_results = vectorstore.similarity_search(question, k=k)
+            semantic_results = vectorstore.similarity_search(question, k=k, filter=flt)
             best_relevance = 1.0
 
         # Relevance gate: bail out early if nothing is semantically close enough.
@@ -141,8 +142,12 @@ def hybrid_search(vectorstore, question, k=5, min_relevance=None):
         bm25_results = []
         bm25_retriever = _get_bm25_retriever(vectorstore)
         if bm25_retriever is not None:
-            bm25_retriever.k = k
+            # When scoped to one file, pull more BM25 candidates then keep only
+            # that file's, since BM25 ranks over the whole corpus.
+            bm25_retriever.k = k * 4 if source else k
             bm25_results = bm25_retriever.invoke(question)
+            if source:
+                bm25_results = [d for d in bm25_results if d.metadata.get("source") == source][:k]
 
         # Reciprocal Rank Fusion. Dedup by content so the same chunk retrieved by
         # both methods is merged and its scores add up.
@@ -163,7 +168,7 @@ def hybrid_search(vectorstore, question, k=5, min_relevance=None):
 
     except Exception as e:
         print(f"Hybrid search error: {e}")
-        return vectorstore.similarity_search(question, k=k)
+        return vectorstore.similarity_search(question, k=k, filter=flt)
 
 def rerank_documents(docs, question, llm):
     """
@@ -229,21 +234,22 @@ def build_conversation_context(conversation_history, max_history=5):
     context += "\n---\n"
     return context
 
-def ask_question(vectorstore, question, conversation_history=None):
+def ask_question(vectorstore, question, conversation_history=None, scope=None):
     """
     Main question answering function with improved routing and context
-    
+
     Args:
         vectorstore: Chroma vector store
         question: User question
         conversation_history: List of previous exchanges for context
+        scope: Optional filename to restrict retrieval to a single document
     """
     try:
         if conversation_history is None:
             conversation_history = []
         if is_analytic_question(question):
             try:
-                retrieved_docs = hybrid_search(vectorstore, question, k=30, min_relevance=0)
+                retrieved_docs = hybrid_search(vectorstore, question, k=30, min_relevance=0, source=scope)
                 selected_dataset = select_best_dataset(retrieved_docs)
 
                 if selected_dataset:
@@ -256,8 +262,8 @@ def ask_question(vectorstore, question, conversation_history=None):
             # No structured dataset produced an answer -> fall through to normal
             # document Q&A instead of dead-ending the query.
 
-        retrieved_docs = hybrid_search(vectorstore, question, k=10)
-        
+        retrieved_docs = hybrid_search(vectorstore, question, k=10, source=scope)
+
         # Rerank documents using LLM for better relevance
         retrieved_docs = rerank_documents(retrieved_docs, question, llm)
         
