@@ -758,4 +758,4 @@ _pal_cmds = [
     {"c": "/scope all", "d": "Search all documents"},
 ] + [{"c": "/scope " + n, "d": "Focus on this file"} for n in _pal_files]
 
-st.components.v1.html(_PALETTE_JS.replace("__CMDS__", json.dumps(_pal_cmds)), height=0)
+st.iframe(_PALETTE_JS.replace("__CMDS__", json.dumps(_pal_cmds)), height=1)
