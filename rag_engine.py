@@ -13,9 +13,22 @@ splitter = RecursiveCharacterTextSplitter(chunk_size=MAX_CHUNK_SIZE, chunk_overl
 _bm25_cache = {"count": -1, "retriever": None}
 
 
-def add_documents(vectorstore, docs):
-    """Add documents to vector store with batch processing"""
+def _invalidate_bm25_cache():
+    _bm25_cache["count"] = -1
+    _bm25_cache["retriever"] = None
+
+
+def add_documents(vectorstore, docs, file_hash=None):
+    """Add documents to vector store with batch processing.
+
+    If file_hash is given, every chunk is tagged with it so the file's vectors
+    can later be removed as a unit (see delete_documents).
+    """
     chunks = splitter.split_documents(docs)
+
+    if file_hash:
+        for chunk in chunks:
+            chunk.metadata["file_hash"] = file_hash
 
     print(f"Total Chunks Created: {len(chunks)}")
     batch_size = 100
@@ -29,7 +42,33 @@ def add_documents(vectorstore, docs):
             print(f"Indexed {min(i + batch_size, len(chunks))}/{len(chunks)}")
         except Exception as e:
             print(f"Batch Failed: {e}")
+    _invalidate_bm25_cache()
     print("Document Indexing Complete")
+
+
+def delete_documents(vectorstore, file_hash):
+    """Remove every chunk belonging to a file (by its content hash)."""
+    try:
+        vectorstore._collection.delete(where={"file_hash": file_hash})
+        _invalidate_bm25_cache()
+        return True
+    except Exception as e:
+        print(f"Delete failed: {e}")
+        return False
+
+
+def reset_vectorstore(vectorstore):
+    """Remove all documents from the vector store."""
+    try:
+        data = vectorstore.get()
+        ids = data.get("ids") or []
+        if ids:
+            vectorstore.delete(ids=ids)
+        _invalidate_bm25_cache()
+        return True
+    except Exception as e:
+        print(f"Reset failed: {e}")
+        return False
 
 def select_best_dataset(docs):
     """Select best dataset from retrieved documents"""
@@ -69,7 +108,7 @@ def _get_bm25_retriever(vectorstore):
     _bm25_cache["retriever"] = retriever
     return retriever
 
-def hybrid_search(vectorstore, question, k=5):
+def hybrid_search(vectorstore, question, k=5, min_relevance=None):
     """
     Hybrid retrieval: fuse semantic (vector) and keyword (BM25) rankings with
     Reciprocal Rank Fusion (RRF).
@@ -78,9 +117,26 @@ def hybrid_search(vectorstore, question, k=5):
     real, comparable score -- unlike the previous version, where every BM25 hit
     got a flat 0.5 and results were deduped by object identity (which never
     matched between the two retrievers, so the "hybrid" merge never happened).
+
+    A relevance gate (min_relevance) returns no results when even the best
+    semantic match is too weak, so the caller can say "not found" instead of
+    answering from irrelevant chunks. Pass min_relevance=0 to disable it.
     """
+    if min_relevance is None:
+        min_relevance = RELEVANCE_THRESHOLD
     try:
-        semantic_results = vectorstore.similarity_search(question, k=k)
+        try:
+            scored = vectorstore.similarity_search_with_relevance_scores(question, k=k)
+            semantic_results = [doc for doc, _ in scored]
+            best_relevance = max((rel for _, rel in scored), default=0.0)
+        except Exception:
+            # Fallback if the collection has no relevance function configured.
+            semantic_results = vectorstore.similarity_search(question, k=k)
+            best_relevance = 1.0
+
+        # Relevance gate: bail out early if nothing is semantically close enough.
+        if min_relevance > 0 and best_relevance < min_relevance:
+            return []
 
         bm25_results = []
         bm25_retriever = _get_bm25_retriever(vectorstore)
@@ -185,7 +241,7 @@ def ask_question(vectorstore, question, conversation_history=None):
             conversation_history = []
         if is_analytic_question(question):
             try:
-                retrieved_docs = hybrid_search(vectorstore, question, k=30)
+                retrieved_docs = hybrid_search(vectorstore, question, k=30, min_relevance=0)
                 selected_dataset = select_best_dataset(retrieved_docs)
 
                 if selected_dataset:

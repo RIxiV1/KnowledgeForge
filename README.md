@@ -6,10 +6,10 @@ Built with Ollama, ChromaDB, LangChain, and Streamlit.
 
 ## Features
 
-- **Multi-format ingestion** — PDF, TXT, CSV, XLSX/XLS, DOCX, PPTX, and JSON. Uploads are de-duplicated by content hash so the same file isn't indexed twice.
+- **Multi-format ingestion** — PDF, TXT, CSV, XLSX/XLS, DOCX, PPTX, and JSON. Uploads are de-duplicated by content hash (persisted, so it survives restarts) and each file can be removed individually — which also deletes its vectors.
 - **Hybrid retrieval** — combines semantic (vector) search with BM25 keyword search using Reciprocal Rank Fusion, so both meaning and exact-term matches contribute to ranking. The BM25 index is cached and only rebuilt when the document set changes.
 - **LLM reranking** — retrieved chunks are reordered by the LLM for relevance before the answer is generated.
-- **Grounded answers with sources** — the prompt instructs the model to answer only from retrieved context and to say when something isn't found. Each answer lists the source files it drew from.
+- **Grounded answers with sources** — a relevance gate skips answering when nothing is close enough (rather than answering from noise), and the prompt instructs the model to answer only from retrieved context. Each answer lists the source files it drew from.
 - **Conversation memory** — recent turns are fed back as context within a session, and full history is persisted to SQLite.
 - **Lightweight tabular analytics** — questions like "total revenue" or "top 5 by price" over an uploaded CSV/Excel file are answered with pandas via keyword-based intent detection (no LLM-generated code).
 
@@ -97,6 +97,7 @@ cp .env.example .env
 | `CHUNK_OVERLAP` | `150` | Chunk overlap (characters) |
 | `MAX_CONTEXT_LENGTH` | `15000` | Max characters of context sent to the LLM |
 | `CONVERSATION_HISTORY_LIMIT` | `5` | Turns of history considered |
+| `RELEVANCE_THRESHOLD` | `0.15` | Min semantic relevance (0–1) to answer; below it the app says it couldn't find the answer. `0` disables the gate. |
 
 ## Run
 

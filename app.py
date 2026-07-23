@@ -5,8 +5,18 @@ import time
 import streamlit as st
 from document_loader import load_file
 from vector_store import get_vectorstore
-from rag_engine import add_documents, ask_question
-from database import create_tables, save_chat, get_chat_history, clear_history
+from rag_engine import add_documents, ask_question, delete_documents, reset_vectorstore
+from database import (
+    create_tables,
+    save_chat,
+    get_chat_history,
+    clear_history,
+    save_file,
+    get_indexed_files,
+    get_indexed_hashes,
+    delete_file,
+    clear_indexed_files,
+)
 
 create_tables()
 
@@ -55,7 +65,9 @@ if "conversation_history" not in st.session_state:
     st.session_state.conversation_history = []
 
 if "uploaded_hashes" not in st.session_state:
-    st.session_state.uploaded_hashes = set()
+    # Seed from the persistent registry so re-uploading an already-indexed file
+    # across restarts doesn't create duplicate vectors.
+    st.session_state.uploaded_hashes = get_indexed_hashes()
 
 if "show_history" not in st.session_state:
     st.session_state.show_history = False
@@ -85,9 +97,29 @@ with st.sidebar:
     
     if st.button("View Chat History", use_container_width=True):
         st.session_state.show_history = not st.session_state.get("show_history", False)
-    
+
+    # Indexed documents, with per-file removal (deletes their vectors too).
+    indexed_files = get_indexed_files()
+    st.metric("Indexed Files", len(indexed_files))
+    if indexed_files:
+        with st.expander("Manage documents"):
+            for fhash, fname in indexed_files:
+                fcol, bcol = st.columns([4, 1])
+                fcol.caption(fname)
+                if bcol.button("Remove", key=f"del_{fhash}", use_container_width=True):
+                    delete_documents(st.session_state.vectorstore, fhash)
+                    delete_file(fhash)
+                    st.session_state.uploaded_hashes.discard(fhash)
+                    try:
+                        os.remove(os.path.join(UPLOAD_DIR, fname))
+                    except OSError:
+                        pass
+                    st.success(f"Removed {fname}")
+                    time.sleep(0.5)
+                    st.rerun()
+
     col1, col2 = st.columns(2)
-    
+
     with col1:
         if st.button("Clear History", use_container_width=True):
             clear_history()
@@ -108,9 +140,13 @@ with st.sidebar:
         with col1:
             if st.button("Yes, Delete", use_container_width=True, key="confirm_delete"):
                 try:
+                    # Wipe files, their vectors, and the registry together so
+                    # deleted documents can't still surface in answers.
+                    reset_vectorstore(st.session_state.vectorstore)
+                    clear_indexed_files()
                     if os.path.exists("uploads"):
                         shutil.rmtree("uploads")
-                        os.makedirs("uploads", exist_ok=True)    
+                        os.makedirs("uploads", exist_ok=True)
                     st.session_state.uploaded_hashes = set()
                     st.session_state.show_delete_warning = False
                     st.success("All uploads deleted!")
@@ -154,8 +190,9 @@ if uploaded_files:
         with st.spinner(f"Processing {uploaded_file.name}..."):
             try:
                 docs = load_file(file_path)
-                add_documents(st.session_state.vectorstore, docs)
+                add_documents(st.session_state.vectorstore, docs, file_hash=file_hash)
                 st.session_state.uploaded_hashes.add(file_hash)
+                save_file(file_hash, uploaded_file.name)
                 st.success(f"{uploaded_file.name} indexed ({len(docs)} chunks)")
             except Exception as e:
                 st.error(f"Error processing {uploaded_file.name}: {str(e)}")
