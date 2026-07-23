@@ -205,9 +205,11 @@ def format_sources_with_context(retrieved_docs):
     sources = []
     for doc in retrieved_docs:
         source_info = { "filename": doc.metadata.get("source", "Unknown"), "file_type": doc.metadata.get("file_type", "Unknown"), "file_path": doc.metadata.get("file_path", "Unknown"), }
-        
+
+        if doc.metadata.get("page"):
+            source_info["page"] = doc.metadata["page"]
         if "batch_start" in doc.metadata:
-            source_info["rows"] = f"{doc.metadata.get('batch_start', 0)}-{doc.metadata.get('batch_end', 0)}"      
+            source_info["rows"] = f"{doc.metadata.get('batch_start', 0)}-{doc.metadata.get('batch_end', 0)}"
         sources.append(source_info)
     return sources
 
@@ -264,35 +266,35 @@ def ask_question(vectorstore, question, conversation_history=None):
 
         if not retrieved_docs:
             return { "answer": "No relevant information found in your documents. Try uploading more documents or rephrasing your question.", "sources": [], "is_analytics": False }
-        context = "\n\n".join(doc.page_content for doc in retrieved_docs)
-        context = context[:MAX_CONTEXT_LENGTH]
+        # Number each passage with its source so the model can ground precisely.
+        numbered = []
+        for i, doc in enumerate(retrieved_docs, 1):
+            src = doc.metadata.get("source", "document")
+            page = doc.metadata.get("page")
+            tag = f"[{i}] {src}" + (f", p.{page}" if page else "")
+            numbered.append(f"{tag}\n{doc.page_content}")
+        context = "\n\n".join(numbered)[:MAX_CONTEXT_LENGTH]
 
         # Build conversation context for better continuity
         conversation_context = ""
         if conversation_history:
             conversation_context = build_conversation_context(conversation_history, max_history=3)
         
-        prompt = f"""{conversation_context}
-You are a document QA assistant. Answer questions ONLY using the provided context.
+        prompt = f"""{conversation_context}You are KnowledgeForge, a precise document question-answering assistant.
+Answer the user's question using ONLY the numbered context passages below.
 
-PRIMARY RULES:
-- Answer ONLY using the context provided
-- When answering questions about a person, provide a complete summary using all relevant information found in the context, not just the person's name.
-- Separate skills, education, experience, and certifications into their proper categories when present in the context.
-- Do NOT hallucinate or make up information
-- If information is not in context, say: "I couldn't find this information in your documents."
-- If asked about previous questions, reference them naturally from conversation history
-- No guessing or filling missing values
-- No making up trends, causes, or business insights
-- Do not add extra commentary beyond the answer
-- Prioritize accuracy over completeness
-- If prior question is referenced, respond only if supported by context
+RULES:
+- Use only facts stated in the context. Never invent, guess, or rely on outside knowledge.
+- Read ALL passages before answering, then combine the relevant details into one complete, well-structured answer. Group related facts; use short bullet points when it improves clarity.
+- Stay faithful to the source wording; do not add opinions, commentary, or numbers that are not in the context.
+- If the answer is not in the context, reply exactly: "I couldn't find this in your documents."
+- If only part of the question is supported, answer that part and state what is missing.
+- When the question refers to earlier turns, use the conversation history only if the context supports those facts.
 
-CONTEXT FROM DOCUMENTS:
+CONTEXT PASSAGES:
 {context}
 
-QUESTION:
-{question}
+QUESTION: {question}
 
 ANSWER:"""
         response = llm.invoke(prompt)

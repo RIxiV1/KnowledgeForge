@@ -2,6 +2,8 @@ import os
 import shutil
 import hashlib
 import time
+import base64
+import html
 import streamlit as st
 from document_loader import load_file
 from vector_store import get_vectorstore
@@ -29,32 +31,95 @@ st.set_page_config( page_title="KnowledgeForge", page_icon="◆", layout="wide",
 
 st.markdown("""
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap');
 :root{
-  --ground:#0B1120; --surface:#161E2E; --surface-2:#1B2437;
-  --border:#27324B; --text:#E6EAF3; --muted:#93A0B8;
-  --accent:#6366F1; --accent-hover:#818CF8;
+  --bg:#0A0E1A; --bg-2:#0E1424;
+  --surface:#121A2B; --surface-2:#182136; --elevated:#1B2540;
+  --border:#242F49; --border-strong:#33436A;
+  --text:#EAEEF9; --muted:#8B96B0; --faint:#5A6685;
+  --accent:#6366F1; --accent-2:#818CF8; --violet:#8B5CF6; --ember:#F59E0B;
+  --radius:16px; --radius-sm:11px;
+  --shadow:0 12px 34px -16px rgba(0,0,0,.7);
+  --font:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
+  --display:'Plus Jakarta Sans','Inter',sans-serif;
 }
-.stApp, [data-testid="stAppViewContainer"]{ background:var(--ground); }
-h1,h2,h3,h4,h5,p,span,label,li{ color:var(--text); }
-[data-testid="stSidebar"]{ background:var(--surface); border-right:1px solid var(--border); }
-[data-testid="stSidebar"] .stButton>button{
-  background:var(--surface-2); color:var(--text); border:1px solid var(--border);
-  border-radius:9px; font-weight:500; transition:border-color .15s ease, color .15s ease; }
-[data-testid="stSidebar"] .stButton>button:hover{ border-color:var(--accent); color:#fff; }
-.stButton>button{ border-radius:9px; }
-.stChatMessage{ background:var(--surface); border:1px solid var(--border);
-  border-radius:14px; padding:14px 16px; margin-bottom:10px; }
-[data-testid="stChatInput"]{ background:var(--surface); border:1px solid var(--border); border-radius:12px; }
-[data-testid="stChatInput"]:focus-within{ border-color:var(--accent); }
+html, body, [class*="css"], .stApp, textarea, input, button{ font-family:var(--font); }
+.stApp{
+  background:
+    radial-gradient(1100px 520px at 82% -12%, rgba(99,102,241,.11), transparent 60%),
+    radial-gradient(880px 500px at -5% 0%, rgba(139,92,246,.07), transparent 55%),
+    var(--bg);
+}
+.block-container{ max-width:920px; padding-top:2rem; }
+h1,h2,h3,h4{ font-family:var(--display); letter-spacing:-.02em; color:var(--text); }
+p,span,label,li{ color:var(--text); }
+
+[data-testid="stSidebar"]{ background:linear-gradient(180deg,#0F1524,#0B1019); border-right:1px solid var(--border); }
+
+/* Buttons */
+.stButton>button{
+  border-radius:var(--radius-sm); font-weight:600; border:1px solid var(--border);
+  background:var(--elevated); color:var(--text);
+  transition:transform .12s ease, border-color .15s ease, background .15s ease, box-shadow .15s ease;
+}
+.stButton>button:hover{ border-color:var(--accent); background:#20294552; transform:translateY(-1px);
+  box-shadow:0 8px 20px -12px rgba(99,102,241,.75); }
+.stButton>button:active{ transform:translateY(0); }
+.stButton>button:focus:not(:active){ box-shadow:0 0 0 3px rgba(99,102,241,.32); }
+
+/* Chat bubbles */
+.stChatMessage{
+  background:var(--surface); border:1px solid var(--border);
+  border-radius:var(--radius); padding:16px 18px; margin-bottom:12px; box-shadow:var(--shadow);
+  animation:msgIn .34s cubic-bezier(.2,.7,.2,1) both;
+}
+@keyframes msgIn{ from{opacity:0; transform:translateY(9px);} to{opacity:1; transform:none;} }
+.stChatMessage:has([data-testid*="AvatarUser"]),
+.stChatMessage:has([data-testid*="avatar-user"]){
+  background:linear-gradient(180deg,#17203a,#131a2f); border-color:#2c3a63; }
+
+/* Chat input */
+[data-testid="stChatInput"]{ background:var(--surface); border:1px solid var(--border);
+  border-radius:14px; box-shadow:var(--shadow); }
+[data-testid="stChatInput"]:focus-within{ border-color:var(--accent); box-shadow:0 0 0 3px rgba(99,102,241,.22); }
+[data-testid="stChatInput"] textarea{ font-size:1rem; }
+
+/* Uploader */
 [data-testid="stFileUploaderDropzone"]{
-  background:var(--surface); border:1.5px dashed var(--border); border-radius:14px; }
+  background:linear-gradient(180deg,var(--surface),var(--bg-2));
+  border:1.5px dashed var(--border-strong); border-radius:var(--radius); transition:border-color .15s ease; }
 [data-testid="stFileUploaderDropzone"]:hover{ border-color:var(--accent); }
-[data-testid="stMetricValue"]{ color:var(--text); font-variant-numeric:tabular-nums; font-weight:600; }
-[data-testid="stMetricLabel"]{ color:var(--muted); }
-[data-testid="stExpander"]{ border:1px solid var(--border); border-radius:12px; background:var(--surface); }
-.stAlert{ border-radius:10px; }
-a{ color:var(--accent-hover); text-decoration:none; }
-hr{ border-color:var(--border); margin:14px 0; }
+
+/* Metrics */
+[data-testid="stMetric"]{ background:var(--surface); border:1px solid var(--border);
+  border-radius:var(--radius-sm); padding:12px 15px; }
+[data-testid="stMetricValue"]{ font-family:var(--display); font-weight:800; font-variant-numeric:tabular-nums; }
+[data-testid="stMetricLabel"]{ color:var(--muted); font-weight:500; }
+
+/* Expander / alerts */
+[data-testid="stExpander"]{ border:1px solid var(--border); border-radius:var(--radius-sm); background:var(--surface); }
+.stAlert{ border-radius:var(--radius-sm); border:1px solid var(--border); }
+
+/* Chips, links, scrollbar, selection */
+.kf-chip{ display:inline-flex; align-items:center; gap:6px; padding:5px 11px; border-radius:999px;
+  background:#161f36; border:1px solid var(--border); color:var(--muted); font-size:.8rem; font-weight:500; }
+.kf-chip b{ color:var(--text); font-weight:600; }
+.kf-meta{ display:flex; flex-wrap:wrap; gap:7px; margin-top:12px; }
+.kf-src-wrap{ display:flex; flex-direction:column; gap:7px; }
+.kf-src{ display:flex; align-items:center; gap:10px; padding:9px 12px; border-radius:11px;
+  background:#131b2e; border:1px solid var(--border); }
+.kf-badge{ font-size:.66rem; font-weight:700; letter-spacing:.04em; color:var(--accent-2);
+  background:rgba(99,102,241,.14); border:1px solid rgba(99,102,241,.32); padding:2px 7px; border-radius:6px; }
+.kf-src-name{ color:var(--text); font-size:.88rem; font-weight:500; word-break:break-word; }
+.kf-src-meta{ color:var(--muted); font-size:.8rem; margin-left:auto; white-space:nowrap;
+  font-variant-numeric:tabular-nums; }
+a{ color:var(--accent-2); text-decoration:none; }
+a:hover{ text-decoration:underline; }
+hr{ border-color:var(--border); margin:16px 0; }
+::selection{ background:rgba(99,102,241,.35); }
+::-webkit-scrollbar{ width:10px; height:10px; }
+::-webkit-scrollbar-thumb{ background:#26304a; border-radius:8px; border:2px solid transparent; background-clip:padding-box; }
+::-webkit-scrollbar-thumb:hover{ background:#37456A; }
 #MainMenu, footer, header{ visibility:hidden; }
 @media (prefers-reduced-motion: reduce){ *{ animation:none !important; transition:none !important; } }
 </style>
@@ -101,6 +166,55 @@ EMPTY_STATE_HTML = f"""
   <div style="color:#6B7688;font-size:.86rem;margin-top:3px;">Upload a document above, then ask a question about it.</div>
 </div>
 """
+
+# The brand mark as a data-URI so it can be used as the assistant's chat avatar.
+_GEM_AVATAR = "data:image/svg+xml;base64," + base64.b64encode(_gem(30).encode("utf-8")).decode("ascii")
+
+
+def _sources_html(sources):
+    """Render retrieved sources as compact cards, deduped by file + page."""
+    if not sources:
+        return ""
+    seen, cards = set(), []
+    for s in sources:
+        if not isinstance(s, dict):
+            key = str(s)
+            if key in seen:
+                continue
+            seen.add(key)
+            cards.append(f'<div class="kf-src"><span class="kf-src-name">{html.escape(key)}</span></div>')
+            continue
+        name = html.escape(s.get("filename", "Unknown"))
+        ftype = html.escape((s.get("file_type") or "doc").upper())
+        page, rows = s.get("page"), s.get("rows")
+        key = (name, page, rows)
+        if key in seen:
+            continue
+        seen.add(key)
+        bits = []
+        if page:
+            bits.append(f"page {html.escape(str(page))}")
+        if rows:
+            bits.append(f"rows {html.escape(str(rows))}")
+        meta = f'<span class="kf-src-meta">{" · ".join(bits)}</span>' if bits else ""
+        cards.append(
+            f'<div class="kf-src"><span class="kf-badge">{ftype}</span>'
+            f'<span class="kf-src-name">{name}</span>{meta}</div>'
+        )
+    return '<div class="kf-src-wrap">' + "".join(cards) + "</div>"
+
+
+def _meta_html(latency, is_analytics, n_sources):
+    """A small row of pill chips: latency · mode · source count."""
+    mode = "Analytics" if is_analytics else "Document Q&A"
+    return (
+        '<div class="kf-meta">'
+        f'<span class="kf-chip"><b>{latency}s</b></span>'
+        f'<span class="kf-chip">{mode}</span>'
+        f'<span class="kf-chip"><b>{n_sources}</b> source(s)</span>'
+        "</div>"
+    )
+
 
 if "vectorstore" not in st.session_state:
     st.session_state.vectorstore = get_vectorstore()
@@ -256,85 +370,70 @@ if st.session_state.get("show_history", False):
 
 # MAIN INTERFACE
 
-# Calm empty state when there's no conversation yet
+# Empty state + one-tap starter questions when there's no conversation yet.
 if not st.session_state.conversation_history:
     st.markdown(EMPTY_STATE_HTML, unsafe_allow_html=True)
+    if get_indexed_files():
+        st.markdown(
+            '<div style="text-align:center;color:#6B7688;font-size:.78rem;'
+            'letter-spacing:.06em;margin:2px 0 8px;">TRY ASKING</div>',
+            unsafe_allow_html=True,
+        )
+        _examples = ["Summarize the key points", "What problem does this solve?", "What are the main features?"]
+        for _col, _ex in zip(st.columns(len(_examples)), _examples):
+            if _col.button(_ex, key=f"ex::{_ex}", use_container_width=True):
+                st.session_state.pending_question = _ex
+                st.rerun()
 
-# conversation history
+# Conversation transcript (rendered uniformly; new answers appear here after rerun).
 for exchange in st.session_state.conversation_history:
     with st.chat_message("user"):
-        st.write(exchange["question"])    
-    with st.chat_message("assistant"):
+        st.write(exchange["question"])
+    with st.chat_message("assistant", avatar=_GEM_AVATAR):
         st.write(exchange["answer"])
+        st.markdown(
+            _meta_html(
+                exchange.get("latency", 0),
+                exchange.get("is_analytics", False),
+                len(exchange.get("sources") or []),
+            ),
+            unsafe_allow_html=True,
+        )
         if exchange.get("sources"):
             with st.expander("Sources"):
-                for source in exchange["sources"]:
-                    if isinstance(source, dict):
-                        source_text = f"{source.get('filename', 'Unknown')}"
-                        if source.get('file_type'):
-                            source_text += f" ({source['file_type'].upper()})"
-                        if source.get('rows'):
-                            source_text += f" - Rows: {source['rows']}"
-                        st.info(source_text)
-                    else:
-                        st.info(f"{source}")
+                st.markdown(_sources_html(exchange["sources"]), unsafe_allow_html=True)
 
-question = st.chat_input("Ask a question about your documents…")
+# Input: a typed question, or a starter chip that set pending_question.
+typed = st.chat_input("Ask a question about your documents…")
+question = typed or st.session_state.pop("pending_question", None)
 
 if question:
-    # input validation
     if len(question.strip()) < 3:
-        st.warning("Please ask a longer question")
+        st.warning("Please enter a longer question.")
     else:
-        # user message
-        with st.chat_message("user"):
-            st.write(question)
-        
-        # question Process
         start_time = time.time()
-        # Defaults so the metrics row below never hits an undefined name if the
-        # call raises before these are assigned.
-        answer = "No response generated"
-        sources = []
-        is_analytics = False
+        answer, sources, is_analytics = "No response generated", [], False
         with st.spinner("Searching your documents…"):
             try:
-                result = ask_question( st.session_state.vectorstore, question, conversation_history=st.session_state.conversation_history )
+                result = ask_question(
+                    st.session_state.vectorstore,
+                    question,
+                    conversation_history=st.session_state.conversation_history,
+                )
                 answer = result.get("answer", "No response generated")
                 sources = result.get("sources", [])
                 is_analytics = result.get("is_analytics", False)
-
                 save_chat(question, answer)
-
-                st.session_state.conversation_history.append({ "question": question, "answer": answer, "sources": sources, "is_analytics": is_analytics })
-
-                if len(st.session_state.conversation_history) > 10:
-                    st.session_state.conversation_history = st.session_state.conversation_history[-10:]
             except Exception as e:
                 answer = f"Error: {str(e)}"
                 sources = []
         latency = round(time.time() - start_time, 2)
-        with st.chat_message("assistant"):
-            st.write(answer)
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.caption(f"{latency}s")
-            with col2:
-                if is_analytics:
-                    st.caption("Analytics")
-                else:
-                    st.caption("Document Q&A")
-            with col3:
-                st.caption(f"{len(sources)} source(s)")
-            if sources:
-                with st.expander("Sources"):
-                    for i, source in enumerate(sources, 1):
-                        if isinstance(source, dict):
-                            source_text = f"**{i}. {source.get('filename', 'Unknown')}**"
-                            if source.get('file_type'):
-                                source_text += f" ({source['file_type'].upper()})"
-                            st.info(source_text)
-                            if source.get('rows'):
-                                st.caption(f"Rows: {source['rows']}")
-                        else:
-                            st.info(f"**{i}. {source}**")
+        st.session_state.conversation_history.append({
+            "question": question,
+            "answer": answer,
+            "sources": sources,
+            "is_analytics": is_analytics,
+            "latency": latency,
+        })
+        st.session_state.conversation_history = st.session_state.conversation_history[-10:]
+        st.rerun()
