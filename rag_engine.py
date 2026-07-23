@@ -226,9 +226,9 @@ RANKING (numbers only):
             # Reorder documents based on LLM ranking
             reranked = [docs[i] for i in ranking if i < len(docs)]
             return reranked
-        except:
+        except Exception:
             return docs
-    except:
+    except Exception:
         return docs
 
 def format_sources_with_context(retrieved_docs):

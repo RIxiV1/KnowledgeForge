@@ -80,22 +80,14 @@ def save_chat(question, answer):
     cursor.execute(""" INSERT INTO chat_history ( question, answer ) VALUES (?, ?) """, (question, answer) )
     conn.commit()
     conn.close()
-    
-def delete_old_chats(days=30):
-    """Delete chats older than X days"""
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        DELETE FROM chat_history 
-        WHERE created_at < datetime('now', '-' || ? || ' days')
-    """, (days,))
-    conn.commit()
-    conn.close()
 
-def get_chat_history():
+def get_chat_history(limit=200):
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute( """ SELECT question, answer, created_at FROM chat_history ORDER BY id DESC """ )
+    cursor.execute(
+        "SELECT question, answer, created_at FROM chat_history ORDER BY id DESC LIMIT ?",
+        (limit,),
+    )
     rows = cursor.fetchall()
     conn.close()
     return rows

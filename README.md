@@ -92,11 +92,11 @@ cp .env.example .env
 | `EMBEDDING_MODEL` | `mxbai-embed-large:latest` | Ollama model for embeddings |
 | `CHROMA_PATH` | `chroma_db` | Vector store directory |
 | `DATABASE_PATH` | `chat_history.db` | SQLite history file |
-| `RETRIEVAL_TOP_K` | `20` | Retrieval breadth |
 | `CHUNK_SIZE` | `1200` | Chunk size (characters) |
 | `CHUNK_OVERLAP` | `150` | Chunk overlap (characters) |
-| `MAX_CONTEXT_LENGTH` | `15000` | Max characters of context sent to the LLM |
-| `CONVERSATION_HISTORY_LIMIT` | `5` | Turns of history considered |
+| `MAX_CONTEXT_LENGTH` | `9000` | Max characters of context sent to the LLM |
+| `LLM_NUM_CTX` | `8192` | Model context window (tokens); keep ≥ `MAX_CONTEXT_LENGTH` in tokens |
+| `MAX_UPLOAD_MB` | `50` | Maximum uploaded-file size, rejected before parsing |
 | `RELEVANCE_THRESHOLD` | `0.15` | Min semantic relevance (0–1) to answer; below it the app says it couldn't find the answer. `0` disables the gate. |
 
 ## Run

@@ -134,19 +134,3 @@ def analyze_dataframe(file_path, question):
 
     except Exception as e:
         return f"Error analyzing data: {str(e)}"
-
-def get_dataframe_summary(file_path):
-    """
-    Get basic summary of a dataframe for context
-    """
-    try:
-        ext = os.path.splitext(file_path)[1].lower() 
-        if ext == ".csv":
-            df = pd.read_csv(file_path, nrows=100)
-        elif ext in [".xlsx", ".xls"]:
-            df = pd.read_excel(file_path)
-        else:
-            return None
-        return { "shape": df.shape, "columns": df.columns.tolist(), "dtypes": {col: str(dtype) for col, dtype in df.dtypes.items()} }
-    except:
-        return None

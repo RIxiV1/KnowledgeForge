@@ -1,10 +1,13 @@
 import os
+import re
 import shutil
 import hashlib
 import time
 import html
 import json
+import traceback
 import streamlit as st
+from config import MAX_UPLOAD_MB
 from document_loader import load_file
 from vector_store import get_vectorstore
 from rag_engine import add_documents, prepare_answer, delete_documents, reset_vectorstore
@@ -323,6 +326,19 @@ _COMMANDS_HELP = """**Slash commands**
 """
 
 
+def _safe_name(name):
+    """Strip any path components and unsafe characters from an uploaded filename."""
+    name = os.path.basename(name or "").replace("\\", "/").split("/")[-1]
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", name).lstrip(".")
+    return name[:120] or "file"
+
+
+def _disk_name(file_hash, display_name):
+    """Deterministic on-disk name: hash-prefixed + sanitized, so distinct files
+    with the same name never collide or overwrite each other."""
+    return f"{file_hash[:12]}_{_safe_name(display_name)}"
+
+
 def _append_cmd(question, answer):
     """Add a slash-command result to the transcript (no LLM, no sources)."""
     st.session_state.conversation_history.append({
@@ -463,11 +479,10 @@ with st.sidebar:
                     delete_file(fhash)
                     st.session_state.uploaded_hashes.discard(fhash)
                     try:
-                        os.remove(os.path.join(UPLOAD_DIR, fname))
+                        os.remove(os.path.join(UPLOAD_DIR, _disk_name(fhash, fname)))
                     except OSError:
                         pass
-                    st.success(f"Removed {fname}")
-                    time.sleep(0.5)
+                    st.toast(f"Removed {fname}")
                     st.rerun()
 
     col1, col2 = st.columns(2)
@@ -476,8 +491,7 @@ with st.sidebar:
         if st.button("Clear history", use_container_width=True):
             clear_history()
             st.session_state.conversation_history = []
-            st.success("History cleared")
-            time.sleep(1)
+            st.toast("History cleared")
             st.rerun()
 
     with col2:
@@ -501,16 +515,14 @@ with st.sidebar:
                         os.makedirs("uploads", exist_ok=True)
                     st.session_state.uploaded_hashes = set()
                     st.session_state.show_delete_warning = False
-                    st.success("All uploads deleted!")
-                    time.sleep(1)
+                    st.toast("All documents deleted")
                     st.rerun()
-                except Exception as e:
-                    st.error(f"Error: {e}")
+                except Exception:
+                    traceback.print_exc()
+                    st.error("Couldn't delete everything. Check the server log for details.")
         with col2:
             if st.button("Cancel", use_container_width=True, key="cancel_delete"):
                 st.session_state.show_delete_warning = False
-                st.info("Cancelled")
-                time.sleep(1)
                 st.rerun()
 
 st.markdown(HERO_HTML, unsafe_allow_html=True)
@@ -525,19 +537,26 @@ if uploaded_files:
     progress_placeholder = st.empty()
     
     for uploaded_file in uploaded_files:
-        file_hash = hashlib.md5(uploaded_file.getvalue()).hexdigest()
-        
+        data = uploaded_file.getvalue()
+
+        # Reject oversized files before parsing (memory / decompression-bomb guard).
+        if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
+            st.error(f"{uploaded_file.name} is larger than the {MAX_UPLOAD_MB} MB limit.")
+            continue
+
+        file_hash = hashlib.sha256(data).hexdigest()
+
         # Skip if already uploaded
         if file_hash in st.session_state.uploaded_hashes:
             st.info(f"{uploaded_file.name} already indexed")
             continue
-        
-        file_path = os.path.join(UPLOAD_DIR, uploaded_file.name)
-        
-        # Save file
+
+        # Save under a sanitized, hash-prefixed name so a crafted or duplicate
+        # filename can't escape the uploads folder or overwrite another file.
+        file_path = os.path.join(UPLOAD_DIR, _disk_name(file_hash, uploaded_file.name))
         with open(file_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-        
+            f.write(data)
+
         # file processing
         with st.spinner(f"Indexing {uploaded_file.name}…"):
             try:
@@ -546,8 +565,9 @@ if uploaded_files:
                 st.session_state.uploaded_hashes.add(file_hash)
                 save_file(file_hash, uploaded_file.name)
                 st.success(f"Indexed {uploaded_file.name} — {len(docs)} section(s)")
-            except Exception as e:
-                st.error(f"Error processing {uploaded_file.name}: {str(e)}")
+            except Exception:
+                traceback.print_exc()  # full detail to the server log, not the user
+                st.error(f"Couldn't process {uploaded_file.name}. It may be corrupt, empty, or an unsupported layout.")
 if st.session_state.get("show_history", False):
     with st.expander("Conversation history", expanded=True):
         history = get_chat_history()
@@ -642,8 +662,9 @@ if incoming:
                         buf += tok
                         # Blinking cursor while streaming.
                         box.markdown(buf + ' <span class="kf-cursor"></span>', unsafe_allow_html=True)
-                except Exception as e:
-                    buf = buf or f"Error: {e}"
+                except Exception:
+                    traceback.print_exc()
+                    buf = buf or "Something went wrong while generating the answer. Is Ollama still running?"
                 thinking.empty()
                 answer = buf.strip() or "I couldn't generate a response."
                 box.markdown(answer, unsafe_allow_html=True)  # final render, no cursor
