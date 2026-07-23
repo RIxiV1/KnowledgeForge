@@ -6,7 +6,18 @@ from langchain_core.documents import Document
 from analytics_engine import is_analytic_question, analyze_dataframe
 from config import *
 
-llm = ChatOllama(model=LLM_MODEL, temperature=0, num_ctx=LLM_NUM_CTX)
+_llm_cache = {}
+
+
+def get_llm(model=None):
+    """Return a cached ChatOllama for the given model (defaults to LLM_MODEL)."""
+    name = model or LLM_MODEL
+    if name not in _llm_cache:
+        _llm_cache[name] = ChatOllama(model=name, temperature=0, num_ctx=LLM_NUM_CTX)
+    return _llm_cache[name]
+
+
+llm = get_llm()  # default model
 splitter = RecursiveCharacterTextSplitter(chunk_size=MAX_CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
 
 # Cache the BM25 index so we don't rebuild it over the whole corpus on every query.
@@ -344,7 +355,7 @@ def _passages(docs):
     return out
 
 
-def prepare_answer(vectorstore, question, conversation_history=None, scope=None):
+def prepare_answer(vectorstore, question, conversation_history=None, scope=None, model=None):
     """
     Retrieve context and return everything the UI needs, including a token STREAM.
 
@@ -406,8 +417,10 @@ QUESTION: {question}
 
 ANSWER:"""
 
+        active = get_llm(model)
+
         def _stream():
-            for chunk in llm.stream(prompt):
+            for chunk in active.stream(prompt):
                 yield chunk.content
 
         return {"is_analytics": False, "mode": "stream", "stream": _stream(), "sources": passages}

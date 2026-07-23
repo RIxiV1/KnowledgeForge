@@ -299,6 +299,12 @@ def _meta_html(latency, is_analytics, n_sources):
     )
 
 
+# Response-mode options (label -> Ollama model). "Accurate" first = default.
+RESPONSE_MODES = {
+    "Accurate · llama3.1:8b": "llama3.1:8b",
+    "Fast · qwen2.5:3b": "qwen2.5:3b",
+}
+
 if "vectorstore" not in st.session_state:
     st.session_state.vectorstore = get_vectorstore()
 
@@ -321,6 +327,13 @@ with st.sidebar:
 
     if st.button("How to use", use_container_width=True):
         show_help()
+
+    st.selectbox(
+        "Response mode",
+        list(RESPONSE_MODES.keys()),
+        key="mode_select",
+        help="Fast = quicker answers (qwen2.5:3b, fits your GPU). Accurate = deeper model (llama3.1:8b).",
+    )
 
     st.markdown("---")
 
@@ -503,6 +516,8 @@ if incoming:
             st.write(incoming)
         _scope_sel = st.session_state.get("scope_select", "All documents")
         scope = None if _scope_sel == "All documents" else _scope_sel
+        _mode_sel = st.session_state.get("mode_select", "Accurate · llama3.1:8b")
+        model = RESPONSE_MODES.get(_mode_sel)
         start_time = time.time()
         with st.chat_message("assistant", avatar=_GEM_AVATAR):
             with st.spinner("Searching your documents…"):
@@ -511,6 +526,7 @@ if incoming:
                     incoming,
                     conversation_history=st.session_state.conversation_history,
                     scope=scope,
+                    model=model,
                 )
             if res["mode"] == "stream":
                 answer = st.write_stream(res["stream"])
