@@ -164,7 +164,24 @@ def hybrid_search(vectorstore, question, k=5, min_relevance=None, source=None):
             return semantic_results
 
         ordered = sorted(scores, key=scores.get, reverse=True)
-        return [holder[key] for key in ordered[:k]]
+        if source:
+            return [holder[key] for key in ordered[:k]]
+
+        # Unscoped ("All documents"): cap chunks per file so one large document
+        # can't monopolize the results. Broad questions then draw from several
+        # files automatically -- no manual scoping needed. Reranking still floats
+        # the most relevant chunks to the top for focused questions.
+        cap = max(2, k // 3)
+        per_src, primary, overflow = {}, [], []
+        for key in ordered:
+            src = holder[key].metadata.get("source")
+            if per_src.get(src, 0) < cap:
+                per_src[src] = per_src.get(src, 0) + 1
+                primary.append(key)
+            else:
+                overflow.append(key)
+        selected = (primary + overflow)[:k]
+        return [holder[key] for key in selected]
 
     except Exception as e:
         print(f"Hybrid search error: {e}")
