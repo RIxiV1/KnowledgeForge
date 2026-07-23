@@ -7,7 +7,6 @@ from document_loader import load_file
 from vector_store import get_vectorstore
 from rag_engine import add_documents, ask_question
 from database import create_tables, save_chat, get_chat_history, clear_history
-import json
 
 create_tables()
 
@@ -160,7 +159,7 @@ if uploaded_files:
                 st.success(f"{uploaded_file.name} indexed ({len(docs)} chunks)")
             except Exception as e:
                 st.error(f"Error processing {uploaded_file.name}: {str(e)}")
-if st.session_state.get("show history", False):
+if st.session_state.get("show_history", False):
     with st.expander("what we talked about", expanded=True):
         history = get_chat_history()
         
@@ -219,10 +218,14 @@ if question:
         
         # question Process
         start_time = time.time()
+        # Defaults so the metrics row below never hits an undefined name if the
+        # call raises before these are assigned.
+        answer = "No response generated"
+        sources = []
+        is_analytics = False
         with st.spinner("Searching and analyzing..."):
             try:
                 result = ask_question( st.session_state.vectorstore, question, conversation_history=st.session_state.conversation_history )
-                latency = round(time.time() - start_time, 2)
                 answer = result.get("answer", "No response generated")
                 sources = result.get("sources", [])
                 is_analytics = result.get("is_analytics", False)
@@ -230,13 +233,13 @@ if question:
                 save_chat(question, answer)
 
                 st.session_state.conversation_history.append({ "question": question, "answer": answer, "sources": sources, "is_analytics": is_analytics })
-                
+
                 if len(st.session_state.conversation_history) > 10:
                     st.session_state.conversation_history = st.session_state.conversation_history[-10:]
             except Exception as e:
-                latency = round(time.time() - start_time, 2)
                 answer = f"Error: {str(e)}"
                 sources = []
+        latency = round(time.time() - start_time, 2)
         with st.chat_message("assistant"):
             st.write(answer)
             col1, col2, col3 = st.columns(3)

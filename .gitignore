@@ -8,11 +8,17 @@ wheels/
 
 # Virtual environments
 .venv
+venv/
+env/
 __pycache__/
 Run RAG.txt
 uploads/
 chroma_db/
 chat_history.db
+*.db
 Architecture
 Project Video
 *.pyc
+
+# Environment secrets
+.env

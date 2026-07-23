@@ -1,5 +1,5 @@
 import sqlite3
-DATABASE_PATH = "chat_history.db"
+from config import DATABASE_PATH
 
 def get_connection():
     return sqlite3.connect( DATABASE_PATH, check_same_thread=False)
