@@ -1,8 +1,11 @@
+import logging
 import os
 import re
 from functools import lru_cache
 
 import pandas as pd
+
+log = logging.getLogger(__name__)
 
 
 @lru_cache(maxsize=32)
@@ -35,18 +38,23 @@ def is_analytic_question(question):
 
 def analyze_dataframe(file_path, question):
     """
-    Main function to analyze dataframe - pattern matching only
-    No LLM code generation (too error prone)
+    Analyze a tabular file with deterministic pandas ops (no LLM code-gen).
+
+    Returns a formatted answer string on success, or None when this path can't
+    produce a real answer (non-tabular file, empty data, no matching column, or
+    an error). Returning None lets the caller fall through to normal document
+    Q&A instead of surfacing an internal message like "No numeric columns" to
+    the user as if it were the answer.
     """
     try:
         ext = os.path.splitext(file_path)[1].lower()
         if ext not in (".csv", ".xlsx", ".xls"):
-            return "Unsupported file format for analytics"
+            return None
         df = _load_df(file_path, os.path.getmtime(file_path), ext)
 
         # Validate dataframe
         if df.empty:
-            return "The dataset is empty"
+            return None
         q = question.lower()
         
         if any(word in q for word in ["how many", "count", "total", "rows", "records", "entries"]):
@@ -68,7 +76,7 @@ def analyze_dataframe(file_path, question):
                         return f"Total {col}: {total:,.2f}"
                 total = df[numeric_cols[0]].sum()
                 return f"Total {numeric_cols[0]}: {total:,.2f}"
-            return "No numeric columns found"
+            return None
 
 # AVERAGE / MEAN
         if any(word in q for word in ["average", "avg", "mean"]):
@@ -80,7 +88,7 @@ def analyze_dataframe(file_path, question):
                         return f"Average {col}: {avg:,.2f}"
                 result = df[numeric_cols].mean()
                 return result.to_string()
-            return "No numeric columns found"
+            return None
 
         if any(word in q for word in ["maximum", "max", "highest", "largest"]):
             numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
@@ -91,7 +99,7 @@ def analyze_dataframe(file_path, question):
                         return f"Maximum {col}: {max_val:,.2f}"
                 result = df[numeric_cols].max()
                 return result.to_string()
-            return "No numeric columns found"
+            return None
 
 # MINIMUM 
         if any(word in q for word in ["minimum", "min", "lowest", "smallest"]):
@@ -103,7 +111,7 @@ def analyze_dataframe(file_path, question):
                         return f"Minimum {col}: {min_val:,.2f}"
                 result = df[numeric_cols].min()
                 return result.to_string()
-            return "No numeric columns found"
+            return None
 
 # TOP / BOTTOM
         if "top" in q or "bottom" in q:
@@ -123,7 +131,7 @@ def analyze_dataframe(file_path, question):
                 else:
                     result = df.nsmallest(n, col)[col].to_string()
                     return f"Bottom {n} {col}:\n{result}"
-            return "No numeric columns found"
+            return None
 # GROUP BY
         if set(re.findall(r"[a-z]+", q)) & {"by", "per", "group"}:
             # find group column
@@ -132,7 +140,7 @@ def analyze_dataframe(file_path, question):
                     # Found a column name in question
                     result = df[col].value_counts().to_string()
                     return f"Breakdown by {col}:\n{result}"
-            return "Could not identify column for grouping"
+            return None
         
         numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
         if numeric_cols:
@@ -141,5 +149,6 @@ def analyze_dataframe(file_path, question):
         
         return f"Dataset has {len(df):,} records with columns: {', '.join(df.columns.tolist())}"
 
-    except Exception as e:
-        return f"Error analyzing data: {str(e)}"
+    except Exception:
+        log.exception("Analytics failed for %s; falling back to document Q&A", file_path)
+        return None

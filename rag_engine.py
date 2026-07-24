@@ -350,7 +350,9 @@ def prepare_answer(vectorstore, question, conversation_history=None, scope=None,
                 dataset = select_best_dataset(docs)
                 if dataset:
                     result = analyze_dataframe(dataset, question)
-                    if result:
+                    # None => this path couldn't produce a real answer; fall
+                    # through to document Q&A instead of showing an error string.
+                    if result is not None:
                         return {"is_analytics": True, "mode": "text", "text": result,
                                 "sources": _passages(docs[:5])}
             except Exception:

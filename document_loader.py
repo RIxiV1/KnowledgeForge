@@ -46,9 +46,13 @@ def load_file(file_path):
         pdf.close()
     elif extension == ".txt":
         with open(file_path, "r", encoding="utf-8") as f:
-            text = f.read()
+            text = _clean(f.read())
+        # NOTE: no dataset_id here — that tag marks a file as a tabular dataset
+        # for the analytics path. A .txt is prose, so tagging it made questions
+        # like "how many entries" route into the spreadsheet analyzer, which
+        # then answered with "Unsupported file format for analytics".
         docs = [
-            Document( page_content=text, metadata={ **create_metadata(filename, file_path, "txt"), "dataset_id": file_path } )
+            Document(page_content=text, metadata=create_metadata(filename, file_path, "txt"))
         ]
 # CSV
 

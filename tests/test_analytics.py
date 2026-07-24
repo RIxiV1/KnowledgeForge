@@ -44,3 +44,25 @@ def test_top_n_regex_fix(tmp_path):
     out = analytics_engine.analyze_dataframe(path, "top 5 items from 2023")
     assert "Top 5" in out
     assert "Top 2023" not in out
+
+
+def test_non_tabular_returns_none(tmp_path):
+    """A .txt (or any non-CSV/Excel) must return None, not an error string.
+
+    Returning None lets the caller fall through to document Q&A instead of
+    surfacing 'Unsupported file format for analytics' to the user as the answer.
+    """
+    txt = tmp_path / "notes.txt"
+    txt.write_text("Some prose with the word entries in it.", encoding="utf-8")
+    assert analytics_engine.analyze_dataframe(str(txt), "how many entries") is None
+
+
+def test_empty_dataframe_returns_none(tmp_path):
+    empty = tmp_path / "empty.csv"
+    empty.write_text("col_a,col_b\n", encoding="utf-8")  # header only, no rows
+    assert analytics_engine.analyze_dataframe(str(empty), "how many rows") is None
+
+
+def test_missing_file_returns_none(tmp_path):
+    """An unreadable path must be swallowed to None, not raise or leak an error."""
+    assert analytics_engine.analyze_dataframe(str(tmp_path / "nope.csv"), "count") is None
