@@ -64,7 +64,7 @@ def load_file(file_path):
             batch_df = df.iloc[start:start + CSV_BATCH_SIZE]
             docs.append(
                 Document(
-                    page_content=batch_df.to_string(index=False),
+                    page_content=batch_df.to_csv(index=False),
                     metadata={
                         **create_metadata(filename, file_path, "csv"),
                         "dataset_id": file_path,
@@ -76,12 +76,25 @@ def load_file(file_path):
 
 # Excel Format (xlsx, xls)
     elif extension in [".xlsx", ".xls"]:
-        df = pd.read_excel(file_path)
-        total_rows = len(df)
-        for start in range(0, total_rows, CSV_BATCH_SIZE):
-            batch_df = df.iloc[start:start + CSV_BATCH_SIZE]
-            docs.append(
-                Document( page_content=batch_df.to_string(index=False), metadata={  **create_metadata(filename, file_path, "xlsx"),  "dataset_id": file_path,  "batch_start": start,  "batch_end": min(start + CSV_BATCH_SIZE, total_rows)} ) )
+        # Read EVERY sheet (sheet_name=None -> dict of DataFrames); the old
+        # single-df read silently dropped everything past the first sheet.
+        sheets = pd.read_excel(file_path, sheet_name=None)
+        for sheet_name, df in sheets.items():
+            total_rows = len(df)
+            for start in range(0, total_rows, CSV_BATCH_SIZE):
+                batch_df = df.iloc[start:start + CSV_BATCH_SIZE]
+                docs.append(
+                    Document(
+                        page_content=batch_df.to_csv(index=False),
+                        metadata={
+                            **create_metadata(filename, file_path, "xlsx"),
+                            "dataset_id": file_path,
+                            "sheet": str(sheet_name),
+                            "batch_start": start,
+                            "batch_end": min(start + CSV_BATCH_SIZE, total_rows),
+                        },
+                    )
+                )
 
 # DOCX
 
@@ -108,7 +121,8 @@ def load_file(file_path):
 
         if not sections:
             text = _clean("\n".join(p.text for p in doc.paragraphs))
-            docs = [Document(page_content=text, metadata=create_metadata(filename, file_path, "docx"))]
+            if text:
+                docs.append(Document(page_content=text, metadata=create_metadata(filename, file_path, "docx")))
         else:
             for head, paras in sections:
                 text = _clean("\n".join(paras))
@@ -119,15 +133,46 @@ def load_file(file_path):
                     meta["section"] = head[:120]
                 docs.append(Document(page_content=text, metadata=meta))
 
+        # Tables live outside doc.paragraphs, so the paragraph loop above misses
+        # them entirely — capture their cells (common in reports/contracts).
+        table_rows = []
+        for table in doc.tables:
+            for row in table.rows:
+                cells = [c.text.strip() for c in row.cells]
+                if any(cells):
+                    table_rows.append(" | ".join(cells))
+        if table_rows:
+            ttext = _clean("\n".join(table_rows))
+            if ttext:
+                tmeta = create_metadata(filename, file_path, "docx")
+                tmeta["section"] = "Tables"
+                docs.append(Document(page_content=ttext, metadata=tmeta))
+
 # PPTX
 
     elif extension == ".pptx":
         # One document per slide, tagged with its slide number (as "page") so
         # citations can say which slide a fact came from.
         presentation = Presentation(file_path)
+
+        def _shape_text(shapes):
+            # Recurse into grouped shapes (which have their own .shapes) so text
+            # inside groups isn't dropped; read plain text everywhere else.
+            out = []
+            for shape in shapes:
+                if hasattr(shape, "shapes"):
+                    out.extend(_shape_text(shape.shapes))
+                elif hasattr(shape, "text") and shape.text.strip():
+                    out.append(shape.text)
+            return out
+
         for i, slide in enumerate(presentation.slides, 1):
-            parts = [shape.text for shape in slide.shapes
-                     if hasattr(shape, "text") and shape.text.strip()]
+            parts = _shape_text(slide.shapes)
+            # Speaker notes often hold the presenter's key points — keep them.
+            if slide.has_notes_slide:
+                notes = slide.notes_slide.notes_text_frame.text
+                if notes and notes.strip():
+                    parts.append("Notes: " + notes)
             text = _clean("\n".join(parts))
             if not text:
                 continue

@@ -84,6 +84,26 @@ def test_load_docx_without_headings_is_single_blob(tmp_path):
     assert docs[0].metadata.get("section") is None
 
 
+def test_load_docx_captures_tables(tmp_path):
+    docx = pytest.importorskip("docx")
+    d = docx.Document()
+    d.add_heading("Intro", level=1)
+    d.add_paragraph("Some prose.")
+    table = d.add_table(rows=2, cols=2)
+    table.rows[0].cells[0].text = "Name"
+    table.rows[0].cells[1].text = "Score"
+    table.rows[1].cells[0].text = "Alice"
+    table.rows[1].cells[1].text = "99"
+    path = tmp_path / "report.docx"
+    d.save(str(path))
+
+    docs = document_loader.load_file(str(path))
+
+    # Table content must appear (it lives outside doc.paragraphs).
+    assert any("Alice | 99" in doc.page_content for doc in docs)
+    assert any(doc.metadata.get("section") == "Tables" for doc in docs)
+
+
 def test_load_pptx_one_doc_per_slide(tmp_path):
     pptx = pytest.importorskip("pptx")
     pres = pptx.Presentation()
@@ -99,6 +119,36 @@ def test_load_pptx_one_doc_per_slide(tmp_path):
     assert len(docs) == 2
     assert [doc.metadata.get("page") for doc in docs] == [1, 2]
     assert all(doc.metadata["file_type"] == "pptx" for doc in docs)
+
+
+def test_load_pptx_captures_speaker_notes(tmp_path):
+    pptx = pytest.importorskip("pptx")
+    pres = pptx.Presentation()
+    slide = pres.slides.add_slide(pres.slide_layouts[1])
+    slide.shapes.title.text = "Slide"
+    slide.placeholders[1].text = "Visible body."
+    slide.notes_slide.notes_text_frame.text = "Presenter key point"
+    path = tmp_path / "noted.pptx"
+    pres.save(str(path))
+
+    docs = document_loader.load_file(str(path))
+
+    assert any("Presenter key point" in doc.page_content for doc in docs)
+
+
+def test_load_xlsx_reads_all_sheets(tmp_path):
+    pytest.importorskip("openpyxl")
+    import pandas as pd
+    path = tmp_path / "book.xlsx"
+    with pd.ExcelWriter(str(path)) as writer:
+        pd.DataFrame({"a": [1, 2], "b": [3, 4]}).to_excel(writer, sheet_name="Q1", index=False)
+        pd.DataFrame({"a": [5, 6], "b": [7, 8]}).to_excel(writer, sheet_name="Q2", index=False)
+
+    docs = document_loader.load_file(str(path))
+
+    sheets = {doc.metadata.get("sheet") for doc in docs}
+    assert sheets == {"Q1", "Q2"}  # both sheets indexed, not just the first
+    assert all(doc.metadata["file_type"] == "xlsx" for doc in docs)
 
 
 def test_unsupported_extension_raises(tmp_path):

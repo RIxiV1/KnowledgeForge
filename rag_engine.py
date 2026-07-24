@@ -374,14 +374,25 @@ def prepare_answer(vectorstore, question, conversation_history=None, scope=None,
                     "confidence": confidence}
 
         passages = _passages(docs)
-        numbered = "\n\n".join(
-            f"[{p['n']}] {p['filename']}"
-            + (f", p.{p['page']}" if p['page'] else "")
-            + (f", §{p['section']}" if p.get('section') else "")
-            + f"\n{p['text']}"
-            for p in passages
-        )
-        context = numbered[:MAX_CONTEXT_LENGTH]
+        # Pack whole passages up to the budget instead of slicing the joined
+        # string at MAX_CONTEXT_LENGTH (which used to cut mid-word / mid-chunk).
+        blocks, used = [], 0
+        for p in passages:
+            header = (
+                f"[{p['n']}] {p['filename']}"
+                + (f", p.{p['page']}" if p['page'] else "")
+                + (f", §{p['section']}" if p.get('section') else "")
+            )
+            block = f"{header}\n{p['text']}"
+            if not blocks and len(block) > MAX_CONTEXT_LENGTH:
+                # A single oversized passage (e.g. a wide table batch): keep it
+                # but trim to budget so the prompt stays bounded.
+                block = block[:MAX_CONTEXT_LENGTH]
+            if blocks and used + len(block) + 2 > MAX_CONTEXT_LENGTH:
+                break  # stop before overflowing; never truncate a passage's tail
+            blocks.append(block)
+            used += len(block) + 2
+        context = "\n\n".join(blocks)
         conv = build_conversation_context(conversation_history, max_history=3) if conversation_history else ""
 
         prompt = f"""{conv}You are KnowledgeForge, a precise document question-answering assistant.
