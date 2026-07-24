@@ -285,14 +285,24 @@ def _evidence_html(sources):
     return '<div class="kf-ev-wrap">' + "".join(rows) + "</div>"
 
 
-def _render_extras(latency, is_analytics, sources, confidence=None):
-    """Metric chips + Sources + Evidence, shared by live and replayed messages."""
-    st.markdown(_meta_html(latency, is_analytics, len(sources or []), confidence), unsafe_allow_html=True)
+def _render_extras(latency, is_analytics, sources, confidence=None, refused=False):
+    """Metric chips + Sources + Evidence, shared by live and replayed messages.
+
+    When `refused` (the model said it couldn't find an answer), we drop the
+    confidence chip and relabel the passages as "closest matches" rather than
+    "sources" — showing High-confidence/5-sources next to a refusal is a lie.
+    """
+    st.markdown(
+        _meta_html(latency, is_analytics, len(sources or []),
+                   None if refused else confidence, refused),
+        unsafe_allow_html=True,
+    )
     if sources:
-        with st.expander("Sources"):
+        with st.expander("Closest matches (not used in the answer)" if refused else "Sources"):
             st.markdown(_sources_html(sources), unsafe_allow_html=True)
-        with st.expander("Evidence — the exact passages used"):
-            st.markdown(_evidence_html(sources), unsafe_allow_html=True)
+        if not refused:
+            with st.expander("Evidence — the exact passages used"):
+                st.markdown(_evidence_html(sources), unsafe_allow_html=True)
 
 
 STUDY_INTRO_HTML = """
@@ -707,9 +717,9 @@ def _confidence_chip(confidence):
     if confidence is None:
         return ""
     pct = max(0, min(100, round(confidence * 100)))
-    if confidence >= 0.5:
+    if confidence >= 0.6:
         label, color = "High", "#37D399"
-    elif confidence >= 0.3:
+    elif confidence >= 0.4:
         label, color = "Medium", "#F5C451"
     else:
         label, color = "Low", "#F08A7A"
@@ -721,14 +731,15 @@ def _confidence_chip(confidence):
     )
 
 
-def _meta_html(latency, is_analytics, n_sources, confidence=None):
+def _meta_html(latency, is_analytics, n_sources, confidence=None, refused=False):
     """A small row of pill chips: latency · mode · source count · confidence."""
     mode = "Analytics" if is_analytics else "Document Q&A"
+    src_label = "closest match(es)" if refused else "source(s)"
     return (
         '<div class="kf-meta">'
         f'<span class="kf-chip"><b>{latency}s</b></span>'
         f'<span class="kf-chip">{mode}</span>'
-        f'<span class="kf-chip"><b>{n_sources}</b> source(s)</span>'
+        f'<span class="kf-chip"><b>{n_sources}</b> {src_label}</span>'
         f'{_confidence_chip(confidence)}'
         "</div>"
     )
@@ -963,6 +974,7 @@ for exchange in st.session_state.conversation_history:
                 exchange.get("is_analytics", False),
                 exchange.get("sources"),
                 exchange.get("confidence"),
+                exchange.get("refused", False),
             )
 
 # Answer a new question with live token streaming.
@@ -976,6 +988,13 @@ if incoming:
             st.write(incoming)
         _scope_sel = st.session_state.get("scope_select", "All documents")
         scope = None if _scope_sel == "All documents" else _scope_sel
+        # If the user is searching all documents but named specific files in the
+        # question (e.g. "compare report.pdf and notes.docx"), scope retrieval to
+        # those files so the answer actually draws from them.
+        if scope is None:
+            _named = [n for _, n in get_indexed_files() if n.lower() in incoming.lower()]
+            if _named:
+                scope = _named if len(_named) > 1 else _named[0]
         _mode_sel = st.session_state.get("mode_select", "Accurate · llama3.1:8b")
         model = RESPONSE_MODES.get(_mode_sel)
         start_time = time.time()
@@ -1011,7 +1030,12 @@ if incoming:
                 answer = res["text"]
                 st.markdown(answer)
             latency = round(time.time() - start_time, 2)
-            _render_extras(latency, res["is_analytics"], res["sources"], res.get("confidence"))
+            # When the model couldn't answer, don't flaunt "High confidence · N
+            # sources" — that reads as a contradiction. Show the retrieved chunks
+            # only as "closest matches" and drop the confidence chip.
+            refused = answer.strip().lower().startswith("i couldn't find")
+            _render_extras(latency, res["is_analytics"], res["sources"],
+                           res.get("confidence"), refused)
         try:
             save_chat(incoming, answer)
         except Exception:
@@ -1023,6 +1047,7 @@ if incoming:
             "is_analytics": res["is_analytics"],
             "latency": latency,
             "confidence": res.get("confidence"),
+            "refused": refused,
         })
         st.session_state.conversation_history = st.session_state.conversation_history[-10:]
 

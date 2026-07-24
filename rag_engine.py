@@ -152,10 +152,27 @@ def hybrid_search(vectorstore, question, k=5, min_relevance=None, source=None, r
     If return_relevance is True, returns (docs, best_relevance) where
     best_relevance is the top semantic score in [0,1] (or None if it couldn't
     be computed). Default is False so existing callers still get a plain list.
+
+    `source` may be None (search everything), a single filename, or a list of
+    filenames (e.g. when the question names two specific files) -- the last case
+    filters to those files and keeps the per-file diversity so each is covered.
     """
     if min_relevance is None:
         min_relevance = RELEVANCE_THRESHOLD
-    flt = {"source": source} if source else None
+
+    # Normalize scope into a list of filenames + a Chroma filter.
+    if isinstance(source, str):
+        sources = [source]
+    elif source:
+        sources = list(source)
+    else:
+        sources = []
+    if len(sources) == 1:
+        flt = {"source": sources[0]}
+    elif len(sources) > 1:
+        flt = {"source": {"$in": sources}}
+    else:
+        flt = None
     best_relevance = None
 
     def _ret(docs):
@@ -180,12 +197,13 @@ def hybrid_search(vectorstore, question, k=5, min_relevance=None, source=None, r
         bm25_results = []
         bm25_retriever = _get_bm25_retriever(vectorstore)
         if bm25_retriever is not None:
-            # When scoped to one file, pull more BM25 candidates then keep only
-            # that file's, since BM25 ranks over the whole corpus.
-            bm25_retriever.k = k * 4 if source else k
+            # When scoped, pull more BM25 candidates then keep only the scoped
+            # files', since BM25 ranks over the whole corpus.
+            bm25_retriever.k = k * 4 if sources else k
             bm25_results = bm25_retriever.invoke(question)
-            if source:
-                bm25_results = [d for d in bm25_results if d.metadata.get("source") == source][:k]
+            if sources:
+                src_set = set(sources)
+                bm25_results = [d for d in bm25_results if d.metadata.get("source") in src_set][:k * 2]
 
         # Reciprocal Rank Fusion. Dedup by content so the same chunk retrieved by
         # both methods is merged and its scores add up.
@@ -202,13 +220,13 @@ def hybrid_search(vectorstore, question, k=5, min_relevance=None, source=None, r
             return _ret(semantic_results)
 
         ordered = sorted(scores, key=scores.get, reverse=True)
-        if source:
+        if len(sources) == 1:
+            # Single-file scope: no diversity needed, just return the best chunks.
             return _ret([holder[key] for key in ordered[:k]])
 
-        # Unscoped ("All documents"): cap chunks per file so one large document
-        # can't monopolize the results. Broad questions then draw from several
-        # files automatically -- no manual scoping needed. Reranking still floats
-        # the most relevant chunks to the top for focused questions.
+        # All documents OR a multi-file scope: cap chunks per file so one large
+        # document can't monopolize the results, and every named file gets
+        # represented. Broad questions then draw from several files automatically.
         cap = max(2, k // 3)
         per_src, primary, overflow = {}, [], []
         for key in ordered:
