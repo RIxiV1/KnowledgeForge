@@ -1028,9 +1028,9 @@ if incoming:
 
 
 # --- Autocomplete popover for the chat box (Gboard-style). Three modes:
-#   "/"  -> slash commands           (e.g. /scope report.pdf)
-#   "@"  -> file-name mentions        (type @ then filter your documents)
-#   else -> question suggestions      (starters + file prompts + recent Qs)
+#   "/"       -> slash commands       (e.g. /scope report.pdf)
+#   "." or "@"-> file suggestions      (".pdf" lists PDFs, ".rep" matches by name)
+#   else      -> question suggestions  (starters + file prompts + recent Qs)
 # Injected via a same-origin iframe that reaches into the parent document to
 # attach a filtered popover to Streamlit's chat textarea.
 _PALETTE_JS = r"""
@@ -1064,7 +1064,8 @@ _PALETTE_JS = r"""
     if(ta.dataset.kfPal === "1") return;
     ta.dataset.kfPal = "1";
     const pop = ensurePop();
-    const MENTION = /(^|\s)@([^\s]*)$/;
+    // A file mention starts a word with "." or "@" — e.g. ".rep" or "@rep".
+    const MENTION = /(^|\s)[.@]([^\s]*)$/;
     let items = [], active = 0;
     function hide(){ pop.style.display = "none"; }
     function draw(){
