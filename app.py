@@ -5,6 +5,7 @@ import hashlib
 import time
 import html
 import json
+import logging
 import traceback
 import urllib.request
 import streamlit as st
@@ -23,7 +24,11 @@ from database import (
     get_indexed_hashes,
     delete_file,
     clear_indexed_files,
+    save_study_attempt,
+    get_study_stats,
 )
+
+log = logging.getLogger(__name__)
 
 create_tables()
 
@@ -404,6 +409,15 @@ def render_study():
                     "source": meta.get("source", ""),
                     "page": meta.get("page"),
                 })
+                # Persist so all-time progress survives restarts (best-effort:
+                # a DB hiccup must never break the study flow).
+                try:
+                    save_study_attempt(
+                        st.session_state.study_question, res["verdict"],
+                        res.get("missed", ""), meta.get("source", ""), meta.get("page"),
+                    )
+                except Exception:
+                    log.exception("Failed to persist study attempt")
                 st.session_state.study_phase = "feedback"
                 st.rerun()
         if c2.button("Skip", use_container_width=True):
@@ -474,6 +488,21 @@ def _render_summary(stats, records):
         + bar + f'<div style="text-align:center;font-size:.83rem;">{legend}</div>',
         unsafe_allow_html=True,
     )
+
+    # All-time progress across every session (persisted in SQLite).
+    try:
+        alltime = get_study_stats()
+    except Exception:
+        log.exception("Failed to load all-time study stats")
+        alltime = None
+    if alltime and alltime["asked"] > asked:
+        at_acc = round(100 * alltime["correct"] / alltime["asked"]) if alltime["asked"] else 0
+        st.markdown(
+            '<div style="text-align:center;color:#6B7688;font-size:.85rem;margin-top:10px;">'
+            f'All-time: <b style="color:#93A0B8;">{at_acc}%</b> accuracy over '
+            f'{alltime["asked"]} question(s) across all sessions</div>',
+            unsafe_allow_html=True,
+        )
 
     revisit = [r for r in records if r.get("verdict") in ("incorrect", "partial")]
     if revisit:

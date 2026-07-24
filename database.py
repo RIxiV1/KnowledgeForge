@@ -33,6 +33,22 @@ def create_tables():
         """
     )
 
+    # Every graded Study-mode answer, so progress accumulates across sessions
+    # (all-time accuracy) rather than resetting each run.
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS study_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            question TEXT,
+            verdict TEXT,
+            missed TEXT,
+            source TEXT,
+            page INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+
     conn.commit()
     conn.close()
 
@@ -75,6 +91,32 @@ def clear_indexed_files():
     cursor.execute("DELETE FROM indexed_files")
     conn.commit()
     conn.close()
+
+def save_study_attempt(question, verdict, missed="", source="", page=None):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO study_attempts (question, verdict, missed, source, page) VALUES (?, ?, ?, ?, ?)",
+        (question, verdict, missed, source, page),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_study_stats():
+    """All-time Study totals across sessions: asked/correct/partial/incorrect."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT verdict, COUNT(*) FROM study_attempts GROUP BY verdict")
+    counts = {verdict: n for verdict, n in cursor.fetchall()}
+    conn.close()
+    return {
+        "asked": sum(counts.values()),
+        "correct": counts.get("correct", 0),
+        "partial": counts.get("partial", 0),
+        "incorrect": counts.get("incorrect", 0),
+    }
+
 
 def save_chat(question, answer):
     conn = get_connection()
