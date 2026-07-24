@@ -224,14 +224,16 @@ def _sources_html(sources):
             continue
         name = html.escape(s.get("filename", "Unknown"))
         ftype = html.escape((s.get("file_type") or "doc").upper())
-        page, rows = s.get("page"), s.get("rows")
-        key = (name, page, rows)
+        page, rows, section = s.get("page"), s.get("rows"), s.get("section")
+        key = (name, page, rows, section)
         if key in seen:
             continue
         seen.add(key)
         bits = []
         if page:
             bits.append(f"page {html.escape(str(page))}")
+        if section:
+            bits.append(html.escape(str(section)))
         if rows:
             bits.append(f"rows {html.escape(str(rows))}")
         meta = f'<span class="kf-src-meta">{" · ".join(bits)}</span>' if bits else ""
@@ -256,6 +258,8 @@ def _evidence_html(sources):
         head = (f"[{num}] " if num else "") + html.escape(str(s.get("filename", "")))
         if s.get("page"):
             head += f" · p.{html.escape(str(s['page']))}"
+        if s.get("section"):
+            head += f" · {html.escape(str(s['section']))}"
         full = s.get("text") or ""
         body = html.escape(full[:700]) + (" …" if len(full) > 700 else "")
         rows.append(f'<div class="kf-ev"><div class="kf-ev-h">{head}</div><div class="kf-ev-b">{body}</div></div>')

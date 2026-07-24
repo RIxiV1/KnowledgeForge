@@ -82,24 +82,57 @@ def load_file(file_path):
 # DOCX
 
     elif extension == ".docx":
+        # Split on heading paragraphs so each section is its own document. This
+        # keeps unrelated topics out of the same chunk (better retrieval) and
+        # lets citations point to the section a fact came from. Falls back to a
+        # single blob for documents with no heading styles.
         doc = DocxDocument(file_path)
-        text = "\n".join(p.text for p in doc.paragraphs)
-        docs = [
-            Document( page_content=text, metadata=create_metadata(filename, file_path, "docx") )
-        ]
+        sections, current_head, current = [], None, []
+        for p in doc.paragraphs:
+            txt = p.text.strip()
+            if not txt:
+                continue
+            style = (p.style.name if p.style else "") or ""
+            if style.startswith("Heading") or style == "Title":
+                if current:
+                    sections.append((current_head, current))
+                current_head, current = txt, [txt]
+            else:
+                current.append(txt)
+        if current:
+            sections.append((current_head, current))
+
+        if not sections:
+            text = _clean("\n".join(p.text for p in doc.paragraphs))
+            docs = [Document(page_content=text, metadata=create_metadata(filename, file_path, "docx"))]
+        else:
+            for head, paras in sections:
+                text = _clean("\n".join(paras))
+                if not text:
+                    continue
+                meta = create_metadata(filename, file_path, "docx")
+                if head:
+                    meta["section"] = head[:120]
+                docs.append(Document(page_content=text, metadata=meta))
 
 # PPTX
 
     elif extension == ".pptx":
+        # One document per slide, tagged with its slide number (as "page") so
+        # citations can say which slide a fact came from.
         presentation = Presentation(file_path)
-        text = ""
-        for slide in presentation.slides:
-            for shape in slide.shapes:
-                if hasattr(shape, "text"):
-                    text += shape.text + "\n"
-        docs = [
-            Document( page_content=text, metadata=create_metadata(filename, file_path, "pptx") )
-        ]
+        for i, slide in enumerate(presentation.slides, 1):
+            parts = [shape.text for shape in slide.shapes
+                     if hasattr(shape, "text") and shape.text.strip()]
+            text = _clean("\n".join(parts))
+            if not text:
+                continue
+            docs.append(
+                Document(
+                    page_content=text,
+                    metadata={**create_metadata(filename, file_path, "pptx"), "page": i},
+                )
+            )
 
 # JSON
 

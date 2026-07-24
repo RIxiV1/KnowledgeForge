@@ -265,6 +265,7 @@ def _passages(docs):
             "filename": m.get("source", "Unknown"),
             "file_type": m.get("file_type", "doc"),
             "page": m.get("page"),
+            "section": m.get("section"),
             "rows": (f"{m.get('batch_start', 0)}-{m.get('batch_end', 0)}" if "batch_start" in m else None),
             "text": doc.page_content,
         })
@@ -310,7 +311,10 @@ def prepare_answer(vectorstore, question, conversation_history=None, scope=None,
 
         passages = _passages(docs)
         numbered = "\n\n".join(
-            f"[{p['n']}] {p['filename']}" + (f", p.{p['page']}" if p['page'] else "") + f"\n{p['text']}"
+            f"[{p['n']}] {p['filename']}"
+            + (f", p.{p['page']}" if p['page'] else "")
+            + (f", §{p['section']}" if p.get('section') else "")
+            + f"\n{p['text']}"
             for p in passages
         )
         context = numbered[:MAX_CONTEXT_LENGTH]
