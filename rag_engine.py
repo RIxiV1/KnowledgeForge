@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import uuid
 
 from langchain_ollama import ChatOllama
@@ -272,6 +273,62 @@ def _passages(docs):
     return out
 
 
+# Words that suggest a question leans on the previous turn (unresolved pronouns,
+# comparatives, or elliptical phrasing). Used only to decide whether it's worth
+# spending an LLM call to rewrite the query — a miss just falls back to the raw
+# question, so the set errs toward catching follow-ups.
+_FOLLOWUP_HINTS = re.compile(
+    r"\b(it|its|it's|that|this|these|those|they|them|their|there|he|she|him|her|his|hers|"
+    r"one|ones|same|above|previous|prior|former|latter|earlier|instead|too|also)\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_followup(question):
+    """Cheap heuristic: does this question likely depend on the conversation?"""
+    q = question.strip()
+    if len(q.split()) <= 3:  # very short → probably elliptical ("and the cost?")
+        return True
+    if q.lower().startswith(("and ", "what about", "how about", "what else", "also", "why")):
+        return True
+    return bool(_FOLLOWUP_HINTS.search(q))
+
+
+def _standalone_question(question, conversation_history, model=None):
+    """Rewrite a follow-up into a self-contained retrieval query using history.
+
+    Returns the original question unchanged when there's no history, when it
+    doesn't look like a follow-up, or on any error — so retrieval never gets
+    worse than before, only better. Only the RETRIEVAL query is rewritten; the
+    generation prompt still receives the user's actual words.
+    """
+    if not conversation_history or not _looks_like_followup(question):
+        return question
+    recent = [e for e in conversation_history[-3:] if e.get("question")]
+    if not recent:
+        return question
+    hist = "\n".join(f"User: {e['question']}\nAssistant: {e.get('answer', '')[:200]}" for e in recent)
+    prompt = (
+        "Rewrite the user's LATEST question into a single standalone search query "
+        "that makes sense on its own. Resolve pronouns and vague references "
+        "('it', 'that', 'the second one') using the conversation. If the question "
+        "is already standalone, return it unchanged. Reply with ONLY the rewritten "
+        "query — no preamble, no quotes, no explanation.\n\n"
+        f"Conversation:\n{hist}\n\nLatest question: {question}\n\nStandalone query:"
+    )
+    try:
+        out = get_llm(model).invoke(prompt).content.strip().strip('"').strip()
+    except Exception:
+        log.exception("Query rewrite failed; using original question")
+        return question
+    # Reject junk: empty, multi-line, or a whole paragraph rather than a query.
+    if not out or "\n" in out or len(out) > 300:
+        return question
+    if out != question:
+        log.info("Rewrote follow-up %r -> %r", question, out)
+    return out
+
+
 def prepare_answer(vectorstore, question, conversation_history=None, scope=None, model=None):
     """
     Retrieve context and return everything the UI needs, including a token STREAM.
@@ -300,9 +357,14 @@ def prepare_answer(vectorstore, question, conversation_history=None, scope=None,
                 log.exception("Analytics routing failed; falling back to Q&A")
             # fall through to normal document Q&A
 
+        # Resolve follow-ups ("what about its price?") into a standalone query so
+        # retrieval isn't thrown off by unresolved pronouns. No-op on the first
+        # turn or clearly standalone questions (see _standalone_question).
+        search_q = _standalone_question(question, conversation_history, model)
+
         # No LLM reranker here: it adds a slow, fragile extra round-trip before
         # streaming can begin. RRF + per-file diversity already rank well.
-        docs, confidence = hybrid_search(vectorstore, question, k=8, source=scope, return_relevance=True)
+        docs, confidence = hybrid_search(vectorstore, search_q, k=8, source=scope, return_relevance=True)
         docs = docs[:5]
         if not docs:
             return {"is_analytics": False, "mode": "text",
