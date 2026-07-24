@@ -46,7 +46,7 @@ st.markdown("""
   --bg:#0A0E1A; --bg-2:#0E1424;
   --surface:#121A2B; --surface-2:#182136; --elevated:#1B2540;
   --border:#242F49; --border-strong:#33436A;
-  --text:#EAEEF9; --muted:#8B96B0; --faint:#5A6685;
+  --text:#EAEEF9; --muted:#9BA6BE; --faint:#7A88A8;
   --accent:#6366F1; --accent-2:#818CF8; --violet:#8B5CF6; --ember:#F59E0B;
   --radius:16px; --radius-sm:11px;
   --shadow:0 12px 34px -16px rgba(0,0,0,.7);
@@ -212,7 +212,7 @@ EMPTY_STATE_HTML = f"""
 <div style="text-align:center;padding:40px 0 12px;">
   <div style="opacity:.55;display:inline-block;">{_gem(40)}</div>
   <div style="color:#C7CEDB;margin-top:14px;font-size:.98rem;font-weight:500;">Your knowledge base is ready</div>
-  <div style="color:#6B7688;font-size:.86rem;margin-top:3px;">Upload a document above, then ask a question about it.</div>
+  <div style="color:#6B7688;font-size:.86rem;margin-top:3px;">Upload documents from the sidebar, then ask a question about them.</div>
 </div>
 """
 
@@ -360,7 +360,7 @@ def render_study():
     """Socratic study mode: quiz the student from their own documents."""
     files = [n for _, n in get_indexed_files()]
     if not files:
-        st.info("Upload a document above, then come back to Study mode to be quizzed on it.")
+        st.info("Upload a document from the sidebar, then come back to Study mode to be quizzed on it.")
         return
 
     stats = st.session_state.setdefault(
@@ -591,7 +591,7 @@ machine, with citations you can verify.
 ---
 
 **How to use — 3 steps**
-1. **Upload** one or more documents at the top of the page.
+1. **Upload** one or more documents from the sidebar.
 2. *(Optional)* In the sidebar **Ask about**, pick a single file to focus on.
 3. **Type your question** and press Enter.
 
@@ -681,7 +681,7 @@ def _handle_command(raw):
         st.rerun()
     if cmd in ("files", "docs", "ls"):
         body = ("**Indexed documents**\n\n" + "\n".join(f"- {n}" for n in names)) if names \
-            else "No documents indexed yet — upload some at the top of the page."
+            else "No documents indexed yet — upload some from the sidebar."
         _append_cmd(raw, body)
         st.rerun()
     if cmd == "scope":
@@ -732,13 +732,17 @@ def _confidence_chip(confidence):
 
 
 def _meta_html(latency, is_analytics, n_sources, confidence=None, refused=False):
-    """A small row of pill chips: latency · mode · source count · confidence."""
-    mode = "Analytics" if is_analytics else "Document Q&A"
+    """A small row of pill chips: latency · [Analytics] · source count · confidence.
+
+    The mode chip only appears for the Analytics path — labeling every ordinary
+    answer "Document Q&A" was redundant noise.
+    """
     src_label = "closest match(es)" if refused else "source(s)"
+    mode_chip = '<span class="kf-chip">Analytics</span>' if is_analytics else ""
     return (
         '<div class="kf-meta">'
         f'<span class="kf-chip"><b>{latency}s</b></span>'
-        f'<span class="kf-chip">{mode}</span>'
+        f'{mode_chip}'
         f'<span class="kf-chip"><b>{n_sources}</b> {src_label}</span>'
         f'{_confidence_chip(confidence)}'
         "</div>"
@@ -787,7 +791,53 @@ with st.sidebar:
     st.markdown("---")
 
     st.markdown("#### Knowledge base")
-    
+
+    # Upload lives in the sidebar so the main column stays focused on the
+    # conversation. Placed before the indexed-files list below so a new upload
+    # shows up in that list on the same run.
+    _uploaded_files = st.file_uploader(
+        "Upload documents",
+        accept_multiple_files=True,
+        type=["pdf", "txt", "csv", "xlsx", "xls", "docx", "pptx", "json"],
+        help=f"PDF · TXT · CSV · XLSX/XLS · DOCX · PPTX · JSON — up to {MAX_UPLOAD_MB} MB each",
+    )
+    if _uploaded_files:
+        for uploaded_file in _uploaded_files:
+            data = uploaded_file.getvalue()
+            # Reject oversized files before parsing (memory / zip-bomb guard).
+            if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
+                st.error(f"{uploaded_file.name} exceeds the {MAX_UPLOAD_MB} MB limit.")
+                continue
+            ext = os.path.splitext(uploaded_file.name)[1].lower()
+            if not _content_type_ok(ext, data):
+                st.error(f"{uploaded_file.name} doesn't look like a valid {ext or 'file'}.")
+                continue
+            file_hash = hashlib.sha256(data).hexdigest()
+            if file_hash in st.session_state.uploaded_hashes:
+                st.info(f"{uploaded_file.name} already indexed")
+                continue
+            # Save under a sanitized, hash-prefixed name so a crafted or duplicate
+            # filename can't escape the uploads folder or overwrite another file.
+            file_path = os.path.join(UPLOAD_DIR, _disk_name(file_hash, uploaded_file.name))
+            with open(file_path, "wb") as f:
+                f.write(data)
+            with st.spinner(f"Indexing {uploaded_file.name}…"):
+                try:
+                    docs = load_file(file_path)
+                    # Show the original filename as the source (file_path keeps the
+                    # hashed on-disk path, which highlighting/analytics still use).
+                    for d in docs:
+                        d.metadata["source"] = uploaded_file.name
+                    add_documents(st.session_state.vectorstore, docs, file_hash=file_hash)
+                    st.session_state.uploaded_hashes.add(file_hash)
+                    save_file(file_hash, uploaded_file.name)
+                    st.success(f"Indexed {uploaded_file.name} — {len(docs)} section(s)")
+                except Exception:
+                    traceback.print_exc()  # full detail to the server log, not the user
+                    st.error(f"Couldn't process {uploaded_file.name}. It may be corrupt or unsupported.")
+
+    st.markdown("")
+
     # Chat history info
     history_count = len(get_chat_history())
     st.metric("Conversations", history_count)
@@ -878,63 +928,13 @@ if not _ollama_up():
         "launch the Ollama app), then refresh. Uploads and answers won't work until it's running."
     )
 
-uploaded_files = st.file_uploader(
-    "Upload documents to your knowledge base",
-    accept_multiple_files=True,
-    type=["pdf", "txt", "csv", "xlsx", "xls", "docx", "pptx", "json"]
-)
-
-if uploaded_files:
-    progress_placeholder = st.empty()
-    
-    for uploaded_file in uploaded_files:
-        data = uploaded_file.getvalue()
-
-        # Reject oversized files before parsing (memory / decompression-bomb guard).
-        if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
-            st.error(f"{uploaded_file.name} is larger than the {MAX_UPLOAD_MB} MB limit.")
-            continue
-
-        ext = os.path.splitext(uploaded_file.name)[1].lower()
-        if not _content_type_ok(ext, data):
-            st.error(f"{uploaded_file.name} doesn't look like a valid {ext or 'file'} — its contents don't match the extension.")
-            continue
-
-        file_hash = hashlib.sha256(data).hexdigest()
-
-        # Skip if already uploaded
-        if file_hash in st.session_state.uploaded_hashes:
-            st.info(f"{uploaded_file.name} already indexed")
-            continue
-
-        # Save under a sanitized, hash-prefixed name so a crafted or duplicate
-        # filename can't escape the uploads folder or overwrite another file.
-        file_path = os.path.join(UPLOAD_DIR, _disk_name(file_hash, uploaded_file.name))
-        with open(file_path, "wb") as f:
-            f.write(data)
-
-        # file processing
-        with st.spinner(f"Indexing {uploaded_file.name}…"):
-            try:
-                docs = load_file(file_path)
-                # Show the original filename as the source (file_path keeps the
-                # hashed on-disk path, which highlighting/analytics still use).
-                for d in docs:
-                    d.metadata["source"] = uploaded_file.name
-                add_documents(st.session_state.vectorstore, docs, file_hash=file_hash)
-                st.session_state.uploaded_hashes.add(file_hash)
-                save_file(file_hash, uploaded_file.name)
-                st.success(f"Indexed {uploaded_file.name} — {len(docs)} section(s)")
-            except Exception:
-                traceback.print_exc()  # full detail to the server log, not the user
-                st.error(f"Couldn't process {uploaded_file.name}. It may be corrupt, empty, or an unsupported layout.")
-
-# --- Mode switch: Study (Socratic) is the hero; Chat is the Q&A fallback. ------
-st.markdown('<div style="margin-top:4px;"></div>', unsafe_allow_html=True)
-_mode = st.radio(
-    "Mode", ["🎓 Study", "💬 Chat"], horizontal=True,
+# --- Mode switch: Study (Socratic) is the hero; Chat is the Q&A fallback. -----
+# A native segmented control reads far cleaner than a raw radio. It can return
+# None if the user deselects, so fall back to Study.
+_mode = st.segmented_control(
+    "Mode", ["🎓 Study", "💬 Chat"], default="🎓 Study",
     label_visibility="collapsed", key="app_mode",
-)
+) or "🎓 Study"
 if _mode == "🎓 Study":
     render_study()
     st.stop()
