@@ -134,7 +134,7 @@ def _get_bm25_retriever(vectorstore):
     _bm25_cache["retriever"] = retriever
     return retriever
 
-def hybrid_search(vectorstore, question, k=5, min_relevance=None, source=None):
+def hybrid_search(vectorstore, question, k=5, min_relevance=None, source=None, return_relevance=False):
     """
     Hybrid retrieval: fuse semantic (vector) and keyword (BM25) rankings with
     Reciprocal Rank Fusion (RRF).
@@ -147,23 +147,34 @@ def hybrid_search(vectorstore, question, k=5, min_relevance=None, source=None):
     A relevance gate (min_relevance) returns no results when even the best
     semantic match is too weak, so the caller can say "not found" instead of
     answering from irrelevant chunks. Pass min_relevance=0 to disable it.
+
+    If return_relevance is True, returns (docs, best_relevance) where
+    best_relevance is the top semantic score in [0,1] (or None if it couldn't
+    be computed). Default is False so existing callers still get a plain list.
     """
     if min_relevance is None:
         min_relevance = RELEVANCE_THRESHOLD
     flt = {"source": source} if source else None
+    best_relevance = None
+
+    def _ret(docs):
+        # Read best_relevance at call time so it reflects the latest value.
+        return (docs, best_relevance) if return_relevance else docs
+
     try:
         try:
             scored = vectorstore.similarity_search_with_relevance_scores(question, k=k, filter=flt)
             semantic_results = [doc for doc, _ in scored]
             best_relevance = max((rel for _, rel in scored), default=0.0)
         except Exception:
-            # Fallback if the collection has no relevance function configured.
+            # Fallback if the collection has no relevance function configured;
+            # relevance is then unknown (None) and the gate below is skipped.
             semantic_results = vectorstore.similarity_search(question, k=k, filter=flt)
-            best_relevance = 1.0
+            best_relevance = None
 
         # Relevance gate: bail out early if nothing is semantically close enough.
-        if min_relevance > 0 and best_relevance < min_relevance:
-            return []
+        if min_relevance > 0 and best_relevance is not None and best_relevance < min_relevance:
+            return _ret([])
 
         bm25_results = []
         bm25_retriever = _get_bm25_retriever(vectorstore)
@@ -187,11 +198,11 @@ def hybrid_search(vectorstore, question, k=5, min_relevance=None, source=None):
                 holder.setdefault(key, doc)
 
         if not scores:
-            return semantic_results
+            return _ret(semantic_results)
 
         ordered = sorted(scores, key=scores.get, reverse=True)
         if source:
-            return [holder[key] for key in ordered[:k]]
+            return _ret([holder[key] for key in ordered[:k]])
 
         # Unscoped ("All documents"): cap chunks per file so one large document
         # can't monopolize the results. Broad questions then draw from several
@@ -207,11 +218,11 @@ def hybrid_search(vectorstore, question, k=5, min_relevance=None, source=None):
             else:
                 overflow.append(key)
         selected = (primary + overflow)[:k]
-        return [holder[key] for key in selected]
+        return _ret([holder[key] for key in selected])
 
     except Exception:
         log.exception("Hybrid search failed; falling back to plain similarity search")
-        return vectorstore.similarity_search(question, k=k, filter=flt)
+        return _ret(vectorstore.similarity_search(question, k=k, filter=flt))
 
 def format_sources_with_context(retrieved_docs):
     """
@@ -290,10 +301,12 @@ def prepare_answer(vectorstore, question, conversation_history=None, scope=None,
 
         # No LLM reranker here: it adds a slow, fragile extra round-trip before
         # streaming can begin. RRF + per-file diversity already rank well.
-        docs = hybrid_search(vectorstore, question, k=8, source=scope)[:5]
+        docs, confidence = hybrid_search(vectorstore, question, k=8, source=scope, return_relevance=True)
+        docs = docs[:5]
         if not docs:
             return {"is_analytics": False, "mode": "text",
-                    "text": "I couldn't find this in your documents.", "sources": []}
+                    "text": "I couldn't find this in your documents.", "sources": [],
+                    "confidence": confidence}
 
         passages = _passages(docs)
         numbered = "\n\n".join(
@@ -330,7 +343,8 @@ ANSWER:"""
             for chunk in active.stream(prompt):
                 yield chunk.content
 
-        return {"is_analytics": False, "mode": "stream", "stream": _stream(), "sources": passages}
+        return {"is_analytics": False, "mode": "stream", "stream": _stream(),
+                "sources": passages, "confidence": confidence}
 
     except Exception as e:
         return {"is_analytics": False, "mode": "text", "text": f"Error: {e}", "sources": []}

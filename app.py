@@ -262,9 +262,9 @@ def _evidence_html(sources):
     return '<div class="kf-ev-wrap">' + "".join(rows) + "</div>"
 
 
-def _render_extras(latency, is_analytics, sources):
+def _render_extras(latency, is_analytics, sources, confidence=None):
     """Metric chips + Sources + Evidence, shared by live and replayed messages."""
-    st.markdown(_meta_html(latency, is_analytics, len(sources or [])), unsafe_allow_html=True)
+    st.markdown(_meta_html(latency, is_analytics, len(sources or []), confidence), unsafe_allow_html=True)
     if sources:
         with st.expander("Sources"):
             st.markdown(_sources_html(sources), unsafe_allow_html=True)
@@ -652,14 +652,37 @@ def _handle_command(raw):
     st.rerun()
 
 
-def _meta_html(latency, is_analytics, n_sources):
-    """A small row of pill chips: latency · mode · source count."""
+def _confidence_chip(confidence):
+    """A colored dot + label showing how relevant the best passage was (0-1 → High/Medium/Low).
+
+    Hidden when confidence is None (analytics answers, or retrieval couldn't score).
+    """
+    if confidence is None:
+        return ""
+    pct = max(0, min(100, round(confidence * 100)))
+    if confidence >= 0.5:
+        label, color = "High", "#37D399"
+    elif confidence >= 0.3:
+        label, color = "Medium", "#F5C451"
+    else:
+        label, color = "Low", "#F08A7A"
+    return (
+        '<span class="kf-chip" title="How closely the top retrieved passage matches your question">'
+        f'<span style="display:inline-block;width:7px;height:7px;border-radius:50%;'
+        f'background:{color};margin-right:5px;vertical-align:middle;"></span>'
+        f'{label} confidence · {pct}%</span>'
+    )
+
+
+def _meta_html(latency, is_analytics, n_sources, confidence=None):
+    """A small row of pill chips: latency · mode · source count · confidence."""
     mode = "Analytics" if is_analytics else "Document Q&A"
     return (
         '<div class="kf-meta">'
         f'<span class="kf-chip"><b>{latency}s</b></span>'
         f'<span class="kf-chip">{mode}</span>'
         f'<span class="kf-chip"><b>{n_sources}</b> source(s)</span>'
+        f'{_confidence_chip(confidence)}'
         "</div>"
     )
 
@@ -892,6 +915,7 @@ for exchange in st.session_state.conversation_history:
                 exchange.get("latency", 0),
                 exchange.get("is_analytics", False),
                 exchange.get("sources"),
+                exchange.get("confidence"),
             )
 
 # Answer a new question with live token streaming.
@@ -940,7 +964,7 @@ if incoming:
                 answer = res["text"]
                 st.markdown(answer)
             latency = round(time.time() - start_time, 2)
-            _render_extras(latency, res["is_analytics"], res["sources"])
+            _render_extras(latency, res["is_analytics"], res["sources"], res.get("confidence"))
         try:
             save_chat(incoming, answer)
         except Exception:
@@ -951,6 +975,7 @@ if incoming:
             "sources": res["sources"],
             "is_analytics": res["is_analytics"],
             "latency": latency,
+            "confidence": res.get("confidence"),
         })
         st.session_state.conversation_history = st.session_state.conversation_history[-10:]
 
