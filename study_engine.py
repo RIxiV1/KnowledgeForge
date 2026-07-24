@@ -5,17 +5,39 @@ answer grading against the source passage, and PDF passage highlighting.
 """
 import json
 import random
+import re
 
 import fitz  # PyMuPDF
 
 from rag_engine import get_llm
 
+_WORD = re.compile(r"[A-Za-z]{2,}")
+# File types that make poor study material (tabular / config, not prose).
+_NON_STUDY_TYPES = {"json", "csv", "xls", "xlsx"}
 
-def pick_chunk(vectorstore, source=None, exclude_ids=None, min_len=180):
-    """Pick a substantial chunk to quiz on, optionally scoped to one file.
 
-    Returns (chunk_id, text, metadata) or None. Prefers unseen, meaty chunks;
-    relaxes those constraints if nothing else is available.
+def _study_worthy(text, meta):
+    """True if a chunk reads like teachable prose (not a table, config, or list of numbers)."""
+    if (meta.get("file_type") or "").lower() in _NON_STUDY_TYPES:
+        return False
+    body = (text or "").strip()
+    if len(_WORD.findall(body)) < 40:               # enough real words
+        return False
+    letters = sum(c.isalpha() for c in body)
+    if letters == 0:
+        return False
+    if sum(c.isdigit() for c in body) / letters > 0.25:   # not number-dominated
+        return False
+    if (body.count(".") + body.count("?") + body.count("!")) < 1:  # has sentences
+        return False
+    return True
+
+
+def pick_chunk(vectorstore, source=None, exclude_ids=None):
+    """Pick a teachable chunk to quiz on, optionally scoped to one file.
+
+    Returns (chunk_id, text, metadata) or None. Prefers unseen, prose-heavy
+    chunks; relaxes to any non-empty chunk only if nothing better exists.
     """
     exclude_ids = exclude_ids or set()
     data = vectorstore.get()
@@ -28,10 +50,9 @@ def pick_chunk(vectorstore, source=None, exclude_ids=None, min_len=180):
             meta = meta or {}
             if source and meta.get("source") != source:
                 continue
-            body = (text or "").strip()
-            if not body:
+            if not (text or "").strip():
                 continue
-            if strict and (cid in exclude_ids or len(body) < min_len):
+            if strict and (cid in exclude_ids or not _study_worthy(text, meta)):
                 continue
             yield (cid, text, meta)
 
@@ -43,7 +64,9 @@ _QGEN = """You are an expert tutor. From the PASSAGE below, write ONE clear, spe
 
 Rules:
 - The question must be fully answerable using only this passage.
-- Prefer conceptual questions (why / how / what does X mean) over trivia.
+- Ask about a concept, cause, definition, process, or relationship.
+- Name the specific thing you're asking about (use terms from the passage), so the question stands on its own.
+- Do NOT ask vague meta-questions like "What do the numbers represent?", "What does this passage say?", or "What is this about?".
 - Output ONLY the question text. No preamble, no answer, no quotes.
 
 PASSAGE:

@@ -783,6 +783,10 @@ if uploaded_files:
         with st.spinner(f"Indexing {uploaded_file.name}…"):
             try:
                 docs = load_file(file_path)
+                # Show the original filename as the source (file_path keeps the
+                # hashed on-disk path, which highlighting/analytics still use).
+                for d in docs:
+                    d.metadata["source"] = uploaded_file.name
                 add_documents(st.session_state.vectorstore, docs, file_hash=file_hash)
                 st.session_state.uploaded_hashes.add(file_hash)
                 save_file(file_hash, uploaded_file.name)
