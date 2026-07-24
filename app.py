@@ -155,7 +155,19 @@ hr{ border-color:var(--border); margin:16px 0; }
 ::-webkit-scrollbar{ width:10px; height:10px; }
 ::-webkit-scrollbar-thumb{ background:#26304a; border-radius:8px; border:2px solid transparent; background-clip:padding-box; }
 ::-webkit-scrollbar-thumb:hover{ background:#37456A; }
-#MainMenu, footer, header{ visibility:hidden; }
+/* Hide the Streamlit chrome we don't want (menu, footer, deploy toolbar,
+   status widget) — but do NOT hide the whole `header`: the control that
+   REOPENS a collapsed sidebar (stSidebarCollapsed) lives up there, and hiding
+   the header made a collapsed sidebar impossible to bring back. */
+footer,
+#MainMenu,
+[data-testid="stMainMenu"],
+[data-testid="stToolbar"],
+[data-testid="stStatusWidget"]{ visibility:hidden; }
+header[data-testid="stHeader"]{ background:transparent; }
+/* Belt-and-suspenders: always keep the sidebar expand/collapse controls shown. */
+[data-testid="stSidebarCollapsed"],
+[data-testid="stSidebarCollapseButton"]{ visibility:visible !important; z-index:1000001; }
 @media (prefers-reduced-motion: reduce){ *{ animation:none !important; transition:none !important; } }
 </style>
 
