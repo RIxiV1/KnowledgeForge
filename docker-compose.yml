@@ -1,0 +1,55 @@
+# KnowledgeForge — two-service stack: Ollama (models) + the Streamlit app.
+#
+# FIRST-RUN MODEL SETUP
+# ---------------------
+# The ollama service starts EMPTY — no models are baked in. After the stack is
+# up you must pull the two models the app uses, INTO the running ollama
+# container (they persist in the named `ollama` volume across restarts):
+#
+#     docker compose exec ollama ollama pull llama3.1:8b
+#     docker compose exec ollama ollama pull mxbai-embed-large
+#
+# Until both models are present the app will error when it tries to embed or
+# generate.
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+    # ---- Optional GPU passthrough -------------------------------------------
+    # GPU acceleration is OPTIONAL and requires the NVIDIA Container Toolkit on
+    # the host. Uncomment the block below to reserve the host GPU(s) for Ollama.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    # -------------------------------------------------------------------------
+
+  app:
+    build: .
+    ports:
+      - "8501:8501"
+    depends_on:
+      - ollama
+    environment:
+      # Tells the app where Ollama lives on the compose network.
+      #
+      # CAVEAT: as written today the app does NOT read this variable — it relies
+      # on the langchain-ollama defaults, which hardcode http://localhost:11434.
+      # Inside this container "localhost" is the app container, NOT ollama, so
+      # the app cannot reach the models as-is.
+      #
+      # NEEDED ONE-LINE CHANGE (not made here): OllamaEmbeddings(...) and
+      # ChatOllama(...) should pass base_url=os.getenv("OLLAMA_HOST",
+      # "http://localhost:11434") so this env var takes effect. Once that is
+      # done, this compose file works end-to-end.
+      - OLLAMA_HOST=http://ollama:11434
+
+volumes:
+  ollama:

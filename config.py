@@ -1,9 +1,17 @@
+import logging
 import os
 
 from dotenv import load_dotenv
 
 # Load values from a local .env file if present (see .env.example).
 load_dotenv()
+
+# Central logging setup (level configurable via LOG_LEVEL). Imported early by the
+# engine modules, so this runs before anything logs.
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 
 
 def _int(name, default):

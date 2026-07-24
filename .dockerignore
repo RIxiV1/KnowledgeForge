@@ -1,0 +1,10 @@
+venv/
+chroma_db/
+uploads/
+__pycache__/
+*.db
+.git/
+Architecture/
+System Architecture/
+*.pdf
+*.pptx

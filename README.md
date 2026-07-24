@@ -7,9 +7,9 @@ Built with Ollama, ChromaDB, LangChain, and Streamlit.
 ## Features
 
 - **Multi-format ingestion** — PDF, TXT, CSV, XLSX/XLS, DOCX, PPTX, and JSON. Uploads are de-duplicated by content hash (persisted, so it survives restarts) and each file can be removed individually — which also deletes its vectors.
-- **Hybrid retrieval** — combines semantic (vector) search with BM25 keyword search using Reciprocal Rank Fusion, so both meaning and exact-term matches contribute to ranking. The BM25 index is cached and only rebuilt when the document set changes.
-- **LLM reranking** — retrieved chunks are reordered by the LLM for relevance before the answer is generated.
-- **Grounded answers with sources** — a relevance gate skips answering when nothing is close enough (rather than answering from noise), and the prompt instructs the model to answer only from retrieved context. Each answer lists the source files it drew from.
+- **Hybrid retrieval** — combines semantic (vector) search with BM25 keyword search using Reciprocal Rank Fusion, so both meaning and exact-term matches contribute to ranking. The BM25 index is cached and only rebuilt when the document set changes, and results are capped per file so no single document dominates.
+- **Streaming, cited answers** — answers stream token-by-token with inline `[n]` citations, an evidence panel showing the exact source passages, and a relevance gate that says "I couldn't find this" instead of answering from noise. The context is fenced against prompt injection.
+- **Socratic Study Mode** — instead of answering, it quizzes you from your own documents, grades your answer against the source, highlights the passage you missed, and tracks a session score.
 - **Conversation memory** — recent turns are fed back as context within a session, and full history is persisted to SQLite.
 - **Lightweight tabular analytics** — questions like "total revenue" or "top 5 by price" over an uploaded CSV/Excel file are answered with pandas via keyword-based intent detection (no LLM-generated code).
 
@@ -42,7 +42,8 @@ Modules:
 | File | Responsibility |
 |------|----------------|
 | `app.py` | Streamlit interface, upload handling, chat loop |
-| `rag_engine.py` | Chunking, hybrid search, reranking, prompt + generation |
+| `rag_engine.py` | Chunking, hybrid search (RRF), prompt + streaming generation |
+| `study_engine.py` | Socratic study: question generation, answer grading, passage highlight |
 | `vector_store.py` | ChromaDB / embeddings setup |
 | `document_loader.py` | Per-format document loading |
 | `analytics_engine.py` | Keyword-based tabular analytics |
@@ -110,10 +111,9 @@ Then open http://localhost:8501, upload some documents from the top of the page,
 ## How it works
 
 1. **Ingestion** — files are parsed per format and split into overlapping chunks; chunks are embedded and stored in ChromaDB. Tabular files (CSV/Excel) are stored in row batches with metadata so they can be located for analytics.
-2. **Retrieval** — for each question, the app runs vector search and BM25 keyword search, then fuses the two rankings with Reciprocal Rank Fusion.
-3. **Reranking** — the LLM reorders the fused candidates by relevance and the top few are kept.
-4. **Generation** — retrieved context plus recent conversation history is passed to the LLM with a grounding prompt, and the answer is shown with its sources.
-5. **Analytics path** — if a question looks like an aggregation ("count", "average", "top N"…), it is answered directly from the relevant dataframe with pandas instead of the LLM.
+2. **Retrieval** — for each question, the app runs vector search and BM25 keyword search, fuses the two rankings with Reciprocal Rank Fusion, and caps chunks per file so broad questions span multiple documents.
+3. **Generation** — retrieved context (fenced against prompt injection) plus recent conversation history is streamed from the LLM with a grounding prompt; the answer shows inline citations and its source passages.
+4. **Analytics path** — if a question looks like an aggregation ("count", "average", "top N"…), it is answered directly from the relevant dataframe with pandas instead of the LLM.
 
 ## Roadmap
 
@@ -124,6 +124,32 @@ Ideas for future work (not yet implemented):
 - Evaluation harness to measure retrieval quality on a labelled set
 - Dockerfile / compose for one-command deployment
 - Authentication and multi-user support
+
+## Docker deployment
+
+A `Dockerfile` and `docker-compose.yml` are provided to run the app and Ollama as two containers. The app image contains only the Streamlit app; the models run in a separate `ollama` service.
+
+Bring the stack up:
+
+```bash
+docker compose up --build
+```
+
+This starts:
+
+- `ollama` — the model server, on port `11434`, with its models persisted in the named `ollama` volume.
+- `app` — the Streamlit UI, on port `8501` (open http://localhost:8501).
+
+**Pull the models the first time.** The `ollama` container starts with no models. After the stack is up, pull the two models the app uses into the running container (they persist in the `ollama` volume):
+
+```bash
+docker compose exec ollama ollama pull llama3.1:8b
+docker compose exec ollama ollama pull mxbai-embed-large
+```
+
+**Base URL.** Both `ChatOllama` and `OllamaEmbeddings` read the `OLLAMA_HOST` environment variable, so inside the compose network the app reaches Ollama at `http://ollama:11434` (set for the `app` service in `docker-compose.yml`). For the local, non-Docker setup, leave `OLLAMA_HOST` unset and it defaults to `http://localhost:11434`.
+
+**GPU acceleration.** By default Ollama runs on CPU. GPU acceleration is optional and requires the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) on the host; uncomment the `deploy.resources.reservations.devices` block under the `ollama` service in `docker-compose.yml` to enable it.
 
 ## Credits
 

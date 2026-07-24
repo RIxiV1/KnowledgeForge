@@ -6,6 +6,7 @@ import time
 import html
 import json
 import traceback
+import urllib.request
 import streamlit as st
 from config import MAX_UPLOAD_MB
 from document_loader import load_file
@@ -584,6 +585,17 @@ def _disk_name(file_hash, display_name):
     return f"{file_hash[:12]}_{_safe_name(display_name)}"
 
 
+def _content_type_ok(ext, data):
+    """Sniff magic bytes so a file's real type matches its extension (a .exe
+    renamed to .pdf is rejected). Text formats are allowed through."""
+    head = data[:8]
+    if ext == ".pdf":
+        return head.startswith(b"%PDF")
+    if ext in (".docx", ".xlsx", ".pptx"):
+        return head.startswith(b"PK\x03\x04")   # modern Office = zip
+    return True   # txt / csv / json / legacy .xls: text or hard to sniff safely
+
+
 def _append_cmd(question, answer):
     """Add a slash-command result to the transcript (no LLM, no sources)."""
     st.session_state.conversation_history.append({
@@ -767,7 +779,23 @@ with st.sidebar:
                 st.session_state.show_delete_warning = False
                 st.rerun()
 
+@st.cache_data(ttl=10, show_spinner=False)
+def _ollama_up():
+    base = os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+    try:
+        with urllib.request.urlopen(base + "/api/tags", timeout=2) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
 st.markdown(HERO_HTML, unsafe_allow_html=True)
+
+if not _ollama_up():
+    st.error(
+        "Can't reach Ollama (the local AI engine). Start it with `ollama serve` (or "
+        "launch the Ollama app), then refresh. Uploads and answers won't work until it's running."
+    )
 
 uploaded_files = st.file_uploader(
     "Upload documents to your knowledge base",
@@ -784,6 +812,11 @@ if uploaded_files:
         # Reject oversized files before parsing (memory / decompression-bomb guard).
         if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
             st.error(f"{uploaded_file.name} is larger than the {MAX_UPLOAD_MB} MB limit.")
+            continue
+
+        ext = os.path.splitext(uploaded_file.name)[1].lower()
+        if not _content_type_ok(ext, data):
+            st.error(f"{uploaded_file.name} doesn't look like a valid {ext or 'file'} — its contents don't match the extension.")
             continue
 
         file_hash = hashlib.sha256(data).hexdigest()

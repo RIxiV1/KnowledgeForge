@@ -1,6 +1,17 @@
-import pandas as pd
 import os
 import re
+from functools import lru_cache
+
+import pandas as pd
+
+
+@lru_cache(maxsize=32)
+def _load_df(path, _mtime, ext):
+    """Cached dataframe load, keyed on path + mtime so file edits invalidate it."""
+    if ext == ".csv":
+        return pd.read_csv(path)
+    return pd.read_excel(path)
+
 
 def is_analytic_question(question):
     """
@@ -29,12 +40,9 @@ def analyze_dataframe(file_path, question):
     """
     try:
         ext = os.path.splitext(file_path)[1].lower()
-        if ext == ".csv":
-            df = pd.read_csv(file_path)
-        elif ext in [".xlsx", ".xls"]:
-            df = pd.read_excel(file_path)
-        else:
+        if ext not in (".csv", ".xlsx", ".xls"):
             return "Unsupported file format for analytics"
+        df = _load_df(file_path, os.path.getmtime(file_path), ext)
 
         # Validate dataframe
         if df.empty:
@@ -99,7 +107,8 @@ def analyze_dataframe(file_path, question):
 
 # TOP / BOTTOM
         if "top" in q or "bottom" in q:
-            match = re.search(r'(\d+)', q)
+            # Only take N right after top/bottom, so "top 5 from 2023" -> 5, not 2023.
+            match = re.search(r'\b(?:top|bottom)\s+(\d+)', q)
             n = int(match.group(1)) if match else 5
             numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
             if numeric_cols:
@@ -116,7 +125,7 @@ def analyze_dataframe(file_path, question):
                     return f"Bottom {n} {col}:\n{result}"
             return "No numeric columns found"
 # GROUP BY
-        if "by" in q or "per" in q or "group" in q:
+        if set(re.findall(r"[a-z]+", q)) & {"by", "per", "group"}:
             # find group column
             for col in df.columns:
                 if col.lower() in q:

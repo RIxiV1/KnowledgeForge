@@ -2,7 +2,9 @@ import sqlite3
 from config import DATABASE_PATH
 
 def get_connection():
-    return sqlite3.connect( DATABASE_PATH, check_same_thread=False)
+    # Each function opens, uses, and closes its own connection within a single
+    # thread, so the default same-thread check is correct (and honest).
+    return sqlite3.connect(DATABASE_PATH)
 
 
 def create_tables():
