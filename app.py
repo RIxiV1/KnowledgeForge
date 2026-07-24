@@ -165,9 +165,11 @@ footer,
 [data-testid="stToolbar"],
 [data-testid="stStatusWidget"]{ visibility:hidden; }
 header[data-testid="stHeader"]{ background:transparent; }
-/* Belt-and-suspenders: always keep the sidebar expand/collapse controls shown. */
+/* Belt-and-suspenders: always keep the sidebar expand/collapse controls shown
+   (stExpandSidebarButton is the one that REOPENS a collapsed sidebar). */
 [data-testid="stSidebarCollapsed"],
-[data-testid="stSidebarCollapseButton"]{ visibility:visible !important; z-index:1000001; }
+[data-testid="stSidebarCollapseButton"],
+[data-testid="stExpandSidebarButton"]{ visibility:visible !important; opacity:1 !important; z-index:1000001; }
 @media (prefers-reduced-motion: reduce){ *{ animation:none !important; transition:none !important; } }
 </style>
 
@@ -1025,20 +1027,27 @@ if incoming:
         st.session_state.conversation_history = st.session_state.conversation_history[-10:]
 
 
-# --- Slash-command palette: live suggestions when you type "/" in the chat box.
+# --- Autocomplete popover for the chat box (Gboard-style). Three modes:
+#   "/"  -> slash commands           (e.g. /scope report.pdf)
+#   "@"  -> file-name mentions        (type @ then filter your documents)
+#   else -> question suggestions      (starters + file prompts + recent Qs)
 # Injected via a same-origin iframe that reaches into the parent document to
 # attach a filtered popover to Streamlit's chat textarea.
-_PALETTE_JS = """
+_PALETTE_JS = r"""
 <script>
 (function(){
   const pw = window.parent, doc = pw.document;
   pw.__KF_CMDS = __CMDS__;
+  pw.__KF_FILES = __FILES__;
+  pw.__KF_SUGG = __SUGG__;
+  function esc(s){ return String(s).replace(/[&<>"]/g, function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
   function ensurePop(){
     let p = doc.getElementById("kf-pop");
     if(!p){
       p = doc.createElement("div");
       p.id = "kf-pop";
-      p.style.cssText = "position:fixed;z-index:1000000;display:none;max-height:280px;overflow:auto;background:#121A2B;border:1px solid #2E3852;border-radius:12px;padding:6px;box-shadow:0 18px 44px -14px rgba(0,0,0,.75);font-family:Inter,system-ui,sans-serif;";
+      p.style.cssText = "position:fixed;z-index:1000000;display:none;max-height:300px;overflow:auto;background:#121A2B;border:1px solid #2E3852;border-radius:12px;padding:6px;box-shadow:0 18px 44px -14px rgba(0,0,0,.75);font-family:Inter,system-ui,sans-serif;";
       doc.body.appendChild(p);
     }
     return p;
@@ -1055,52 +1064,120 @@ _PALETTE_JS = """
     if(ta.dataset.kfPal === "1") return;
     ta.dataset.kfPal = "1";
     const pop = ensurePop();
+    const MENTION = /(^|\s)@([^\s]*)$/;
     let items = [], active = 0;
     function hide(){ pop.style.display = "none"; }
     function draw(){
-      pop.innerHTML = items.map(function(c, i){
-        return '<div data-i="'+i+'" style="display:flex;gap:10px;align-items:baseline;padding:8px 10px;border-radius:8px;cursor:pointer;'+(i===active?'background:#1B2540;':'')+'">'
-          + '<span style="color:#818CF8;font-weight:700;font-size:.85rem;white-space:nowrap;">'+c.c+'</span>'
-          + '<span style="color:#8B96B0;font-size:.78rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+c.d+'</span></div>';
+      pop.innerHTML = items.map(function(it, i){
+        const label = it.kind === 'cmd'
+          ? '<span style="color:#818CF8;font-weight:700;">' + esc(it.label) + '</span>'
+          : esc(it.label);
+        const primary = '<span style="font-size:.9rem;color:#EAEEF9;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;">' + label + '</span>';
+        const hint = it.hint ? '<span style="color:#5A6685;font-size:.72rem;white-space:nowrap;">' + esc(it.hint) + '</span>' : '';
+        return '<div data-i="'+i+'" style="display:flex;gap:10px;align-items:center;padding:8px 10px;border-radius:8px;cursor:pointer;'+(i===active?'background:#1B2540;':'')+'">' + primary + hint + '</div>';
       }).join("");
       pop.querySelectorAll("[data-i]").forEach(function(el){
         el.addEventListener("mouseenter", function(){ active = +el.dataset.i; draw(); });
-        el.addEventListener("mousedown", function(e){ e.preventDefault(); setVal(ta, items[+el.dataset.i].c); hide(); });
+        el.addEventListener("mousedown", function(e){ e.preventDefault(); accept(+el.dataset.i); });
       });
     }
-    function refresh(){
-      const v = ta.value;
-      if(v.charAt(0) !== "/"){ hide(); return; }
-      const q = v.toLowerCase();
-      const CMDS = pw.__KF_CMDS || [];
-      items = CMDS.filter(function(c){
-        const lc = c.c.toLowerCase();
-        if(lc.indexOf(q) === 0) return true;
-        if(q.indexOf(lc) === 0) return true;
-        if(q.indexOf("/scope ") === 0 && lc.indexOf(q.slice(7).trim()) >= 0) return true;
-        return false;
-      });
+    function accept(i){
+      const it = items[i]; if(!it) return;
+      if(it.kind === 'file'){
+        const v = ta.value, m = v.match(MENTION);
+        const start = m ? (m.index + m[1].length) : v.length;
+        setVal(ta, v.slice(0, start) + it.c + ' ');
+      } else {
+        setVal(ta, it.c);
+      }
+      hide();
+    }
+    function show(){
       if(!items.length){ hide(); return; }
       if(active >= items.length) active = 0;
       draw();
       const r = ta.getBoundingClientRect();
       pop.style.left = r.left + "px";
-      pop.style.width = Math.max(r.width, 280) + "px";
+      pop.style.width = Math.max(r.width, 300) + "px";
       pop.style.bottom = (pw.innerHeight - r.top + 10) + "px";
       pop.style.display = "block";
+    }
+    function refresh(){
+      const v = ta.value;
+      // 1) slash commands
+      if(v.charAt(0) === "/"){
+        const q = v.toLowerCase(), CMDS = pw.__KF_CMDS || [];
+        items = CMDS.filter(function(c){
+          const lc = c.c.toLowerCase();
+          if(lc.indexOf(q) === 0) return true;
+          if(q.indexOf(lc) === 0) return true;
+          if(q.indexOf("/scope ") === 0 && lc.indexOf(q.slice(7).trim()) >= 0) return true;
+          return false;
+        }).map(function(c){ return {c:c.c, label:c.c, hint:c.d, kind:'cmd'}; });
+        return show();
+      }
+      // 2) @file mention (anywhere in the text)
+      const mm = v.match(MENTION);
+      if(mm){
+        const q = mm[2].toLowerCase(), FILES = pw.__KF_FILES || [];
+        items = FILES.filter(function(f){ return f.toLowerCase().indexOf(q) >= 0; })
+          .slice(0, 8).map(function(f){ return {c:f, label:f, hint:'file', kind:'file'}; });
+        return show();
+      }
+      // 3) question suggestions (Gboard-style)
+      const t = v.trim();
+      if(t.length >= 2){
+        const q = t.toLowerCase(), SUGG = pw.__KF_SUGG || [];
+        items = SUGG.filter(function(s){ const ls = s.toLowerCase(); return ls !== q && ls.indexOf(q) >= 0; })
+          .slice(0, 6).map(function(s){ return {c:s, label:s, hint:'', kind:'sugg'}; });
+        return show();
+      }
+      hide();
     }
     ta.addEventListener("input", function(){ active = 0; refresh(); });
     ta.addEventListener("keydown", function(e){
       if(pop.style.display !== "block") return;
       if(e.key === "ArrowDown"){ e.preventDefault(); active = (active+1)%items.length; draw(); }
       else if(e.key === "ArrowUp"){ e.preventDefault(); active = (active-1+items.length)%items.length; draw(); }
-      else if(e.key === "Tab"){ e.preventDefault(); setVal(ta, items[active].c); hide(); }
+      else if(e.key === "Tab"){ e.preventDefault(); accept(active); }
       else if(e.key === "Escape"){ hide(); }
     });
     ta.addEventListener("blur", function(){ setTimeout(hide, 150); });
-    ta.addEventListener("focus", function(){ if(ta.value.charAt(0) === "/") refresh(); });
+    ta.addEventListener("focus", function(){ refresh(); });
   }
+
+  // --- Guaranteed sidebar toggle -------------------------------------------
+  // Streamlit's own reopen control can end up hidden by custom chrome CSS, so
+  // we inject our own always-present floating button that clicks whichever of
+  // Streamlit's expand/collapse buttons currently exists.
+  function ensureToggle(){
+    let btn = doc.getElementById("kf-sb-toggle");
+    if(!btn){
+      btn = doc.createElement("button");
+      btn.id = "kf-sb-toggle";
+      btn.type = "button";
+      btn.title = "Show/hide sidebar";
+      btn.innerHTML = "&#9776;";  // ☰
+      btn.style.cssText = "position:fixed;top:10px;left:10px;z-index:1000003;width:40px;height:40px;border-radius:10px;border:1px solid #2E3852;background:#121A2B;color:#EAEEF9;font-size:19px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 6px 18px -8px rgba(0,0,0,.7);";
+      btn.addEventListener("click", function(e){
+        e.preventDefault();
+        const expand = doc.querySelector('[data-testid="stExpandSidebarButton"] button, [data-testid="stExpandSidebarButton"]');
+        const collapse = doc.querySelector('[data-testid="stSidebarCollapseButton"] button, [data-testid="stSidebarCollapseButton"]');
+        const target = expand || collapse;
+        if(target){ target.click(); }
+      });
+      doc.body.appendChild(btn);
+    }
+    // Only show our button while the sidebar is collapsed (otherwise the sidebar
+    // has its own visible collapse button).
+    const sb = doc.querySelector('[data-testid="stSidebar"]');
+    const collapsed = !sb || sb.getAttribute("aria-expanded") === "false" || sb.offsetWidth < 40;
+    btn.style.display = collapsed ? "flex" : "none";
+  }
+
   bind();
+  ensureToggle();
+  setInterval(ensureToggle, 400);  // survive Streamlit reruns + keep in sync
 })();
 </script>
 """
@@ -1116,4 +1193,37 @@ _pal_cmds = [
     {"c": "/scope all", "d": "Search all documents"},
 ] + [{"c": "/scope " + n, "d": "Focus on this file"} for n in _pal_files]
 
-st.iframe(_PALETTE_JS.replace("__CMDS__", json.dumps(_pal_cmds)), height=1)
+# Question suggestions: generic starters + one-per-file prompts + your recent
+# questions (deduped, persisted in SQLite so they carry across sessions). The
+# browser filters these live by what you've typed.
+_starters = [
+    "Summarize the key points",
+    "What problem does this solve?",
+    "What are the main features?",
+    "Explain this in simple terms",
+    "List the main takeaways",
+    "What are the strengths and weaknesses?",
+]
+_file_prompts = []
+for _n in _pal_files:
+    _file_prompts.append("Summarize " + _n)
+    _file_prompts.append("What are the key points in " + _n + "?")
+_recent, _seen = [], set()
+try:
+    for _q, _a, _ts in get_chat_history(limit=40):
+        _qs = (_q or "").strip()
+        _k = _qs.lower()
+        if _qs and not _qs.startswith("/") and _k not in _seen:
+            _seen.add(_k)
+            _recent.append(_qs)
+except Exception:
+    pass
+_pal_sugg = _recent[:12] + _starters + _file_prompts
+
+st.iframe(
+    _PALETTE_JS
+    .replace("__CMDS__", json.dumps(_pal_cmds))
+    .replace("__FILES__", json.dumps(_pal_files))
+    .replace("__SUGG__", json.dumps(_pal_sugg)),
+    height=1,
+)
