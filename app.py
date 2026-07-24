@@ -307,8 +307,13 @@ def _study_new_question(scope, model):
             st.toast("No content to study yet — upload a document first.")
             return
         cid, text, meta = picked
+        try:
+            question = generate_question(text, model)
+        except Exception:
+            traceback.print_exc()
+            st.toast("Couldn't reach the model — is Ollama running?")
+            return
         used.add(cid)
-        question = generate_question(text, model)
     st.session_state.study_chunk = {"id": cid, "text": text, "meta": meta}
     st.session_state.study_question = question
     st.session_state.study_phase = "question"
@@ -371,8 +376,13 @@ def render_study():
             if not answer.strip():
                 st.toast("Write an answer first.")
             else:
-                with st.spinner("Checking your understanding…"):
-                    res = grade_answer(st.session_state.study_question, answer, chunk["text"], model)
+                try:
+                    with st.spinner("Checking your understanding…"):
+                        res = grade_answer(st.session_state.study_question, answer, chunk["text"], model)
+                except Exception:
+                    traceback.print_exc()
+                    st.toast("Couldn't reach the model — is Ollama running?")
+                    st.stop()
                 meta = chunk["meta"]
                 png = None
                 if meta.get("file_type") == "pdf" and meta.get("page") and meta.get("file_path"):
@@ -537,6 +547,19 @@ machine, with citations you can verify.
         st.rerun()
 
 
+@st.dialog("Conversation history", width="large")
+def show_history_dialog():
+    history = get_chat_history()
+    if not history:
+        st.info("No conversations yet.")
+        return
+    for idx, (question, answer, created_at) in enumerate(history, 1):
+        st.caption(f"{idx}.  {created_at}")
+        st.markdown(f"**Q:** {question}")
+        st.markdown(f"**A:** {answer}" if answer else "**A:** _(no answer saved)_")
+        st.divider()
+
+
 _COMMANDS_HELP = """**Slash commands**
 
 - `/help` — open the full help panel
@@ -646,9 +669,6 @@ if "uploaded_hashes" not in st.session_state:
     # across restarts doesn't create duplicate vectors.
     st.session_state.uploaded_hashes = get_indexed_hashes()
 
-if "show_history" not in st.session_state:
-    st.session_state.show_history = False
-
 if "show_delete_warning" not in st.session_state:
     st.session_state.show_delete_warning = False
 
@@ -680,7 +700,7 @@ with st.sidebar:
     st.metric("Conversations", history_count)
 
     if st.button("View history", use_container_width=True):
-        st.session_state.show_history = not st.session_state.get("show_history", False)
+        show_history_dialog()
 
     # Indexed documents, with per-file removal (deletes their vectors too).
     indexed_files = get_indexed_files()
@@ -804,29 +824,6 @@ _mode = st.radio(
 if _mode == "🎓 Study":
     render_study()
     st.stop()
-
-if st.session_state.get("show_history", False):
-    with st.expander("Conversation history", expanded=True):
-        history = get_chat_history()
-        
-        if history:
-            for idx, (question, answer, created_at) in enumerate(history, 1):
-                with st.container():
-                    st.caption(f"**{idx}. {created_at}**")
-                    st.write(f"**Q:** {question}")
-                    # Handle None answer
-                    if answer is None:
-                        st.write("**A:** (No answer saved)")
-                    # long answer truncation with expander
-                    elif len(answer) > 300:
-                        with st.expander("View full answer"):
-                            st.write(answer)
-                    else:
-                        st.write(f"**A:** {answer}")
-                    
-                    st.divider()
-        else:
-            st.info("No conversations yet.")
 
 # MAIN INTERFACE
 # st.chat_input pins to the bottom regardless of where it's called, so read it
