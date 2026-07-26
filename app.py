@@ -992,7 +992,12 @@ if incoming:
         # question (e.g. "compare report.pdf and notes.docx"), scope retrieval to
         # those files so the answer actually draws from them.
         if scope is None:
-            _named = [n for _, n in get_indexed_files() if n.lower() in incoming.lower()]
+            _q_low = incoming.lower()
+            _named = [n for _, n in get_indexed_files() if n.lower() in _q_low]
+            # Drop a name that only matched because it's a substring of a longer
+            # matched filename (e.g. "report.pdf" inside "final report.pdf").
+            _named = [n for n in _named
+                      if not any(n != m and n.lower() in m.lower() for m in _named)]
             if _named:
                 scope = _named if len(_named) > 1 else _named[0]
         _mode_sel = st.session_state.get("mode_select", "Accurate · llama3.1:8b")
@@ -1033,7 +1038,8 @@ if incoming:
             # When the model couldn't answer, don't flaunt "High confidence · N
             # sources" — that reads as a contradiction. Show the retrieved chunks
             # only as "closest matches" and drop the confidence chip.
-            refused = answer.strip().lower().startswith("i couldn't find")
+            _al = answer.strip().lower()[:60]
+            refused = "couldn't find" in _al or "could not find" in _al
             _render_extras(latency, res["is_analytics"], res["sources"],
                            res.get("confidence"), refused)
         try:

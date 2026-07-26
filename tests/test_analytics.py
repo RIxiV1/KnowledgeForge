@@ -46,6 +46,26 @@ def test_top_n_regex_fix(tmp_path):
     assert "Top 2023" not in out
 
 
+def test_sum_avg_max_pick_the_named_column(tmp_path):
+    """avg/sum/max of 'price' must operate on `price`, not the first numeric column."""
+    csv = tmp_path / "cols.csv"
+    csv.write_text("id,price,qty\n1,10,5\n2,20,3\n3,30,8\n", encoding="utf-8")
+    p = str(csv)
+    assert analytics_engine.analyze_dataframe(p, "average price") == "Average price: 20.00"
+    assert analytics_engine.analyze_dataframe(p, "highest price") == "Maximum price: 30.00"
+    assert analytics_engine.analyze_dataframe(p, "lowest qty") == "Minimum qty: 3.00"
+
+
+def test_total_x_is_a_sum_not_a_record_count(tmp_path):
+    """'total price' must sum the price column, not return len(df)."""
+    csv = tmp_path / "cols.csv"
+    csv.write_text("id,price,qty\n1,10,5\n2,20,3\n3,30,8\n", encoding="utf-8")
+    out = analytics_engine.analyze_dataframe(str(csv), "what is the total price")
+    assert out == "Total price: 60.00"
+    # plain "how many rows" is still a count
+    assert analytics_engine.analyze_dataframe(str(csv), "how many rows") == "Total Records: 3"
+
+
 def test_non_tabular_returns_none(tmp_path):
     """A .txt (or any non-CSV/Excel) must return None, not an error string.
 
