@@ -1,0 +1,13 @@
+# Streamlit configuration for KnowledgeForge.
+[browser]
+# Don't send usage statistics to Streamlit.
+gatherUsageStats = false
+
+[server]
+# Auto-open the browser when launched (headless = false).
+headless = false
+port = 8501
+
+[theme]
+# Dark theme to match the app's custom styling.
+base = "dark"
